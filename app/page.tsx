@@ -407,7 +407,8 @@ export default function Home() {
               keywords={runKeywords}
               doneCount={doneCount(enriched)}
               total={enriched.length}
-              onFindPeople={startFindPeople}
+              onFindLeads={startFindPeople}
+              onExport={exportData}
             />
           )}
           {tab === "contacts" && (
@@ -418,6 +419,7 @@ export default function Home() {
               total={contacts.length}
               onGenerateOutreach={startGenerateOutreach}
               setOutreach={setOutreach}
+              onExport={exportData}
             />
           )}
           {tab === "outreach" && (
@@ -459,8 +461,8 @@ function Sidebar({
   const steps: { id: Tab; label: string; icon: React.ReactNode; hint?: string }[] = [
     { id: "upload", label: "Upload", icon: <IconUpload /> },
     { id: "enrich", label: "Enrich", icon: <IconSearch />, hint: !canAccess("enrich") ? "Upload companies first" : undefined },
-    { id: "contacts", label: "People", icon: <IconPerson />, hint: !enrichedDone ? "Run enrichment first" : undefined },
-    { id: "outreach", label: "Outreach", icon: <IconMail />, hint: !contactsDone ? "Find people first" : undefined },
+    { id: "contacts", label: "Leads", icon: <IconPerson />, hint: !enrichedDone ? "Run enrichment first" : undefined },
+    { id: "outreach", label: "Outreach", icon: <IconMail />, hint: !contactsDone ? "Find leads first" : undefined },
   ]
 
   return (
@@ -586,16 +588,14 @@ function UploadPage({
 
   return (
     <div>
-      <PageHeader title="New run" subtitle="Upload your company list, configure enrichment fields, then start." />
+      <PageHeader title="New run" subtitle="Upload your company list, set enrichment fields, then start." />
 
       <div className="flex flex-col gap-4">
-        {/* Drop zone */}
+        {/* 1. Drop zone */}
         <div className="bg-white border border-gray-200 p-5">
-          <div className="flex items-center justify-between mb-4">
-            <div>
-              <h3 className="text-sm font-semibold text-black">Company list</h3>
-              <p className="text-xs text-gray-500 mt-0.5">Upload a .xlsx or .csv with a column of company names.</p>
-            </div>
+          <div className="mb-4">
+            <h3 className="text-sm font-semibold text-black">Company list</h3>
+            <p className="text-xs text-gray-500 mt-0.5">Upload a .xlsx or .csv with a column of company names.</p>
           </div>
           <div
             className={`border-2 border-dashed border-gray-200 p-10 text-center transition-colors ${
@@ -643,7 +643,37 @@ function UploadPage({
           )}
         </div>
 
-        {/* Settings accordion */}
+        {/* 2. Enrichment fields — standalone, always visible */}
+        <div className="bg-white border border-gray-200 p-5">
+          <div className="mb-3">
+            <h3 className="text-sm font-semibold text-black">Enrichment fields</h3>
+            <p className="text-xs text-gray-500 mt-0.5">Data points to extract for each company.</p>
+          </div>
+          <div className="flex flex-wrap gap-1.5 mb-3 min-h-[28px]">
+            {runKeywords.map((kw) => (
+              <span key={kw} className="flex items-center gap-1 bg-black text-white text-xs px-2.5 py-1 font-medium">
+                {kw}
+                <button
+                  onClick={() => setRunKeywords(runKeywords.filter((k) => k !== kw))}
+                  className="hover:text-white/60 ml-0.5 text-base leading-none"
+                >&times;</button>
+              </span>
+            ))}
+          </div>
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={newKw}
+              onChange={(e) => { const v = e.target.value; if (v.endsWith(",")) { addKw(v); return }; setNewKw(v) }}
+              onKeyDown={(e) => e.key === "Enter" && addKw()}
+              placeholder="Add fields — comma separated (e.g. Tech Stack, Funding Stage)"
+              className="flex-1 border border-gray-300 px-3 py-2 text-sm focus:border-black transition-colors bg-white"
+            />
+            <button onClick={() => addKw()} className="border border-black px-4 py-2 text-sm font-medium hover:bg-black hover:text-white transition-colors">Add</button>
+          </div>
+        </div>
+
+        {/* 3. Configure accordion (positioning, ICP, email template only) */}
         <div className="bg-white border border-gray-200 overflow-hidden">
           <button
             onClick={() => setSettingsOpen((v) => !v)}
@@ -652,8 +682,8 @@ function UploadPage({
             <div className="text-left">
               <p className="text-sm font-semibold text-black">Configure</p>
               <p className="text-xs text-gray-500 mt-0.5">
-                {localSettings.keywords.slice(0, 4).join(", ")}{localSettings.keywords.length > 4 ? ` +${localSettings.keywords.length - 4} more` : ""}
-                {localSettings.positioning ? " · Positioning set" : ""}
+                {localSettings.positioning ? "Positioning set" : "No positioning set"}
+                {localSettings.icp ? " · ICP set" : ""}
               </p>
             </div>
             <span className="text-gray-400 text-xs ml-4">{settingsOpen ? "▲" : "▼"}</span>
@@ -661,33 +691,6 @@ function UploadPage({
 
           {settingsOpen && (
             <div className="border-t border-gray-100 px-5 py-5 flex flex-col gap-5">
-              {/* Enrichment fields */}
-              <div>
-                <p className="text-xs font-semibold uppercase tracking-widest text-gray-500 mb-2">Enrichment fields</p>
-                <div className="flex flex-wrap gap-1.5 mb-2 min-h-[28px]">
-                  {localSettings.keywords.map((kw) => (
-                    <span key={kw} className="flex items-center gap-1 bg-black text-white text-xs px-2.5 py-1 font-medium">
-                      {kw}
-                      <button
-                        onClick={() => setLocalSettings((s) => ({ ...s, keywords: s.keywords.filter((k) => k !== kw) }))}
-                        className="hover:text-white/60 ml-0.5 text-base leading-none"
-                      >&times;</button>
-                    </span>
-                  ))}
-                </div>
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={newKw}
-                    onChange={(e) => { const v = e.target.value; if (v.endsWith(",")) { addKw(v); return }; setNewKw(v) }}
-                    onKeyDown={(e) => e.key === "Enter" && addKw()}
-                    placeholder="Add fields — comma separated"
-                    className="flex-1 border border-gray-300 px-3 py-2 text-sm focus:border-black transition-colors bg-white"
-                  />
-                  <button onClick={() => addKw()} className="border border-black px-4 py-2 text-sm font-medium hover:bg-black hover:text-white transition-colors">Add</button>
-                </div>
-              </div>
-
               {/* Positioning */}
               <div>
                 <p className="text-xs font-semibold uppercase tracking-widest text-gray-500 mb-2">Your positioning</p>
@@ -755,13 +758,14 @@ function UploadPage({
 // ─── Enrich Page ──────────────────────────────────────────────────────────────
 
 function EnrichPage({
-  enriched, keywords, doneCount, total, onFindPeople,
+  enriched, keywords, doneCount, total, onFindLeads, onExport,
 }: {
   enriched: EnrichedRow[]
   keywords: string[]
   doneCount: number
   total: number
-  onFindPeople: () => void
+  onFindLeads: () => void
+  onExport: () => void
 }) {
   const pct = total ? Math.round((doneCount / total) * 100) : 0
   const allDone = doneCount === total && total > 0
@@ -780,12 +784,14 @@ function EnrichPage({
           }
         />
         {allDone && (
-          <button
-            onClick={onFindPeople}
-            className="shrink-0 bg-black text-white px-5 py-2.5 text-sm font-semibold hover:bg-gray-900 transition-colors"
-          >
-            Find people →
-          </button>
+          <div className="flex items-center gap-3 shrink-0">
+            <button onClick={onExport} className="border border-gray-300 text-gray-600 px-4 py-2.5 text-sm font-medium hover:border-black hover:text-black transition-colors flex items-center gap-2">
+              <IconExport /> Export
+            </button>
+            <button onClick={onFindLeads} className="bg-black text-white px-5 py-2.5 text-sm font-semibold hover:bg-gray-900 transition-colors">
+              Find leads →
+            </button>
+          </div>
         )}
       </div>
 
@@ -876,7 +882,7 @@ function EnrichPage({
 // ─── Contacts Page ────────────────────────────────────────────────────────────
 
 function ContactsPage({
-  contacts, outreach, doneCount, total, onGenerateOutreach, setOutreach,
+  contacts, outreach, doneCount, total, onGenerateOutreach, setOutreach, onExport,
 }: {
   contacts: ContactRow[]
   outreach: OutreachContact[]
@@ -884,6 +890,7 @@ function ContactsPage({
   total: number
   onGenerateOutreach: (ids: string[]) => void
   setOutreach: React.Dispatch<React.SetStateAction<OutreachContact[]>>
+  onExport: () => void
 }) {
   const pct = total ? Math.round((doneCount / total) * 100) : 0
   const allDone = doneCount === total && total > 0
@@ -900,20 +907,27 @@ function ContactsPage({
     <div>
       <div className="flex items-start justify-between mb-6">
         <PageHeader
-          title="People"
+          title="Leads"
           subtitle={
             allDone
-              ? `${outreach.length} contacts found. Select who to reach out to.`
+              ? `${outreach.length} leads found. Select who to reach out to.`
               : `${doneCount} of ${total} companies searched.`
           }
         />
-        {allDone && selected.length > 0 && (
-          <button
-            onClick={() => onGenerateOutreach(selected.map((c) => c.id))}
-            className="shrink-0 bg-black text-white px-5 py-2.5 text-sm font-semibold hover:bg-gray-900 transition-colors"
-          >
-            Generate outreach for {selected.length} →
-          </button>
+        {allDone && (
+          <div className="flex items-center gap-3 shrink-0">
+            <button onClick={onExport} className="border border-gray-300 text-gray-600 px-4 py-2.5 text-sm font-medium hover:border-black hover:text-black transition-colors flex items-center gap-2">
+              <IconExport /> Export
+            </button>
+            {selected.length > 0 && (
+              <button
+                onClick={() => onGenerateOutreach(selected.map((c) => c.id))}
+                className="bg-black text-white px-5 py-2.5 text-sm font-semibold hover:bg-gray-900 transition-colors"
+              >
+                Generate outreach for {selected.length} →
+              </button>
+            )}
+          </div>
         )}
       </div>
 
@@ -956,54 +970,56 @@ function ContactsPage({
             </span>
           </div>
 
-          <table className="w-full border-collapse text-sm">
-            <thead>
-              <tr className="bg-black text-white">
-                <th className="px-4 py-3 w-10" />
-                <th className="px-4 py-3 text-left text-xs font-semibold tracking-wide whitespace-nowrap">Company</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold tracking-wide whitespace-nowrap">Name</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold tracking-wide whitespace-nowrap">Role</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold tracking-wide whitespace-nowrap">LinkedIn</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold tracking-wide whitespace-nowrap">Confidence</th>
-              </tr>
-            </thead>
-            <tbody>
-              {outreach.map((c, i) => (
-                <tr
-                  key={c.id}
-                  onClick={() => toggleOne(c.id)}
-                  className={`border-t border-gray-100 cursor-pointer transition-colors ${
-                    c.selected ? "bg-gray-50" : "bg-white"
-                  } hover:bg-gray-50/80`}
-                >
-                  <td className="px-4 py-3 text-center">
-                    <input
-                      type="checkbox"
-                      checked={c.selected}
-                      onChange={() => toggleOne(c.id)}
-                      onClick={(e) => e.stopPropagation()}
-                      className="w-4 h-4 accent-black cursor-pointer"
-                    />
-                  </td>
-                  <td className="px-4 py-3 font-semibold text-black whitespace-nowrap">{c.company}</td>
-                  <td className="px-4 py-3 font-medium text-black whitespace-nowrap">{c.name}</td>
-                  <td className="px-4 py-3 text-gray-600 whitespace-nowrap">{c.role}</td>
-                  <td className="px-4 py-3">
-                    {c.linkedin ? (
-                      <a href={c.linkedin} target="_blank" rel="noopener noreferrer"
-                        onClick={(e) => e.stopPropagation()}
-                        className="text-black underline text-xs hover:text-gray-500 whitespace-nowrap">
-                        View profile ↗
-                      </a>
-                    ) : <span className="text-gray-300">—</span>}
-                  </td>
-                  <td className="px-4 py-3">
-                    <ConfidenceBadge level={c.confidence} />
-                  </td>
+          <div className="overflow-x-auto">
+            <table className="w-full border-collapse text-sm">
+              <thead>
+                <tr className="bg-black text-white">
+                  <th className="px-4 py-3 w-10" />
+                  <th className="px-4 py-3 text-left text-xs font-semibold tracking-wide whitespace-nowrap w-32">Company</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold tracking-wide whitespace-nowrap w-40">Name</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold tracking-wide w-56">Role</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold tracking-wide whitespace-nowrap w-28">LinkedIn</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold tracking-wide whitespace-nowrap w-24">Confidence</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {outreach.map((c) => (
+                  <tr
+                    key={c.id}
+                    onClick={() => toggleOne(c.id)}
+                    className={`border-t border-gray-100 cursor-pointer transition-colors ${
+                      c.selected ? "bg-gray-50" : "bg-white"
+                    } hover:bg-gray-50/80`}
+                  >
+                    <td className="px-4 py-3 text-center">
+                      <input
+                        type="checkbox"
+                        checked={c.selected}
+                        onChange={() => toggleOne(c.id)}
+                        onClick={(e) => e.stopPropagation()}
+                        className="w-4 h-4 accent-black cursor-pointer"
+                      />
+                    </td>
+                    <td className="px-4 py-3 font-semibold text-black whitespace-nowrap">{c.company}</td>
+                    <td className="px-4 py-3 font-medium text-black whitespace-nowrap">{c.name}</td>
+                    <td className="px-4 py-3 text-gray-600 max-w-[220px] truncate" title={c.role}>{c.role}</td>
+                    <td className="px-4 py-3">
+                      {c.linkedin ? (
+                        <a href={c.linkedin} target="_blank" rel="noopener noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          className="text-black underline text-xs hover:text-gray-500 whitespace-nowrap">
+                          View ↗
+                        </a>
+                      ) : <span className="text-gray-300">—</span>}
+                    </td>
+                    <td className="px-4 py-3">
+                      <ConfidenceBadge level={c.confidence} />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
     </div>
