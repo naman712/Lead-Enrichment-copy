@@ -40,7 +40,21 @@ type ContactRow = {
   status: "pending" | "loading" | "done" | "error"
 }
 
-type Tab = "settings" | "upload" | "enrich" | "emails" | "contacts"
+type Tab = "settings" | "upload" | "enrich" | "emails" | "contacts" | "history"
+
+type HistoryRun = {
+  id: string
+  keywords: string[]
+  company_count: number
+  created_at: string
+}
+
+type HistoryDetail = {
+  run: HistoryRun
+  enriched: Array<{ company: string; data: Record<string, string | null> }>
+  emails: Array<{ company: string; subject: string; body: string }>
+  contacts: Array<{ company: string; name: string; role: string; linkedin: string | null; confidence: string }>
+}
 
 const DEFAULT_SETTINGS: Settings = {
   keywords: ["Industry", "Employees", "Founded", "HQ Location", "Revenue"],
@@ -56,39 +70,47 @@ export default function Home() {
   const [settings, setSettingsState] = useState<Settings>(DEFAULT_SETTINGS)
   const [settingsSaved, setSettingsSaved] = useState(false)
   const [companies, setCompanies] = useState<string[]>([])
-  const [runKeywords, setRunKeywords] = useState<string[]>(() => {
-    if (typeof window === "undefined") return DEFAULT_SETTINGS.keywords
-    try {
-      const raw = localStorage.getItem(SETTINGS_KEY)
-      if (raw) return JSON.parse(raw).keywords ?? DEFAULT_SETTINGS.keywords
-    } catch {}
-    return DEFAULT_SETTINGS.keywords
-  })
+  const [runKeywords, setRunKeywords] = useState<string[]>(DEFAULT_SETTINGS.keywords)
   const [enriched, setEnriched] = useState<EnrichedRow[]>([])
   const [emails, setEmails] = useState<EmailRow[]>([])
   const [contacts, setContacts] = useState<ContactRow[]>([])
   const [uploading, setUploading] = useState(false)
   const [expandedEmail, setExpandedEmail] = useState<string | null>(null)
   const [newKw, setNewKw] = useState("")
+  const [historyRuns, setHistoryRuns] = useState<HistoryRun[]>([])
+  const [historyDetail, setHistoryDetail] = useState<HistoryDetail | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
 
-  // Load settings from localStorage on mount
+  // Load settings from DB on mount
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem(SETTINGS_KEY)
-      if (raw) {
-        const parsed = { ...DEFAULT_SETTINGS, ...JSON.parse(raw) }
+    fetch("/api/settings")
+      .then((r) => r.json())
+      .then((data) => {
+        const parsed: Settings = {
+          keywords: data.keywords ?? DEFAULT_SETTINGS.keywords,
+          positioning: data.positioning ?? "",
+          icp: data.icp ?? "",
+          emailTemplate: data.email_template ?? "",
+        }
         setSettingsState(parsed)
-        // Sync runKeywords only if the user hasn't started a run yet
-        if (enriched.length === 0) setRunKeywords(parsed.keywords)
-      }
-    } catch {}
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+        setRunKeywords(parsed.keywords)
+      })
+      .catch(() => {})
+  }, [])
 
   const saveSettings = (s: Settings) => {
     setSettingsState(s)
-    localStorage.setItem(SETTINGS_KEY, JSON.stringify(s))
     if (enriched.length === 0) setRunKeywords(s.keywords)
+    fetch("/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        keywords: s.keywords,
+        positioning: s.positioning,
+        icp: s.icp,
+        email_template: s.emailTemplate,
+      }),
+    }).catch(() => {})
     setSettingsSaved(true)
     setTimeout(() => setSettingsSaved(false), 2000)
   }
@@ -202,6 +224,7 @@ export default function Home() {
     setTab("contacts")
     const rows: ContactRow[] = companies.map((c) => ({ company: c, contacts: [], status: "pending" }))
     setContacts(rows)
+    let finalContacts = rows
 
     for (let bs = 0; bs < rows.length; bs += BATCH_SIZE) {
       const batch = rows.slice(bs, bs + BATCH_SIZE)
@@ -218,20 +241,63 @@ export default function Home() {
               body: JSON.stringify({ company: row.company, icp: settings.icp }),
             })
             const json = await res.json()
-            setContacts((prev) =>
-              prev.map((r, i) =>
-                i === idx ? { ...r, contacts: json.contacts ?? [], status: "done" } : r
+            setContacts((prev) => {
+              const next = prev.map((r, i) =>
+                i === idx ? { ...r, contacts: json.contacts ?? [], status: "done" as const } : r
               )
-            )
+              finalContacts = next
+              return next
+            })
           } catch {
-            setContacts((prev) =>
-              prev.map((r, i) => (i === idx ? { ...r, status: "error" } : r))
-            )
+            setContacts((prev) => {
+              const next = prev.map((r, i) => (i === idx ? { ...r, status: "error" as const } : r))
+              finalContacts = next
+              return next
+            })
           }
         })
       )
     }
+
+    // Save complete run to DB
+    await saveRun(enriched, emails, finalContacts)
   }
+
+  // ─── Save run to history ─────────────────────────────────────────────────
+
+  const saveRun = useCallback(async (
+    finalEnriched: EnrichedRow[],
+    finalEmails: EmailRow[],
+    finalContacts: ContactRow[],
+  ) => {
+    try {
+      await fetch("/api/history", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          keywords: runKeywords,
+          company_count: companies.length,
+          enriched: finalEnriched.filter((e) => e.status === "done"),
+          emails: finalEmails.filter((e) => e.status === "done"),
+          contacts: finalContacts,
+        }),
+      })
+    } catch {}
+  }, [runKeywords, companies.length])
+
+  // ─── Load history ────────────────────────────────────────────────────────
+
+  const loadHistory = useCallback(async () => {
+    const res = await fetch("/api/history")
+    const data = await res.json()
+    setHistoryRuns(data.runs ?? [])
+  }, [])
+
+  const loadHistoryDetail = useCallback(async (id: string) => {
+    const res = await fetch(`/api/history/${id}`)
+    const data = await res.json()
+    setHistoryDetail(data)
+  }, [])
 
   // ─── Export ──────────────────────────────────────────────────────────────
 
@@ -255,7 +321,7 @@ export default function Home() {
 
   // Nav item accessibility
   const canAccess = (t: Tab) => {
-    if (t === "settings" || t === "upload") return true
+    if (t === "settings" || t === "upload" || t === "history") return true
     if (t === "enrich") return enriched.length > 0
     if (t === "emails") return emails.length > 0
     if (t === "contacts") return contacts.length > 0
@@ -276,6 +342,7 @@ export default function Home() {
         emailsDone={emails.length > 0 && doneCount(emails) === emails.length}
         onExport={exportData}
         showExport={enriched.length > 0 || emails.length > 0 || contacts.length > 0}
+        onHistoryClick={loadHistory}
       />
 
       {/* Main content */}
@@ -331,6 +398,15 @@ export default function Home() {
               onExport={exportData}
             />
           )}
+          {tab === "history" && (
+            <HistoryPage
+              runs={historyRuns}
+              detail={historyDetail}
+              onLoad={loadHistory}
+              onSelect={loadHistoryDetail}
+              onBack={() => setHistoryDetail(null)}
+            />
+          )}
         </div>
       </main>
     </div>
@@ -340,7 +416,7 @@ export default function Home() {
 // ─── Sidebar ──────────────────────────────────────────────────────────────────
 
 function Sidebar({
-  tab, setTab, canAccess, hasCompanies, enrichedDone, emailsDone, onExport, showExport,
+  tab, setTab, canAccess, hasCompanies, enrichedDone, emailsDone, onExport, showExport, onHistoryClick,
 }: {
   tab: Tab
   setTab: (t: Tab) => void
@@ -350,6 +426,7 @@ function Sidebar({
   emailsDone: boolean
   onExport: () => void
   showExport: boolean
+  onHistoryClick: () => void
 }) {
   const runItems: { id: Tab; label: string; icon: React.ReactNode; hint?: string }[] = [
     {
@@ -373,6 +450,18 @@ function Sidebar({
 
       {/* Nav */}
       <nav className="flex-1 px-3 py-4 flex flex-col gap-0.5 overflow-y-auto">
+        {/* History */}
+        <NavItem
+          active={tab === "history"}
+          accessible={true}
+          icon={<IconHistory />}
+          label="History"
+          onClick={() => { onHistoryClick(); setTab("history") }}
+        />
+
+        <div className="my-3 border-t border-white/10" />
+        <p className="text-[10px] font-semibold tracking-widest text-white/30 uppercase px-3 mb-1">Config</p>
+
         {/* Settings */}
         <NavItem
           active={tab === "settings"}
@@ -1205,5 +1294,142 @@ function IconUploadLg() {
     <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.2" className="text-gray-300">
       <path strokeLinecap="round" strokeLinejoin="round" d="M9 13h6m-3-3v6m5 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
     </svg>
+  )
+}
+
+function IconHistory() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+    </svg>
+  )
+}
+
+// ─── History Page ─────────────────────────────────────────────────────────────
+
+function HistoryPage({
+  runs, detail, onLoad, onSelect, onBack,
+}: {
+  runs: HistoryRun[]
+  detail: HistoryDetail | null
+  onLoad: () => void
+  onSelect: (id: string) => void
+  onBack: () => void
+}) {
+  useEffect(() => { onLoad() }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (detail) {
+    return (
+      <div>
+        <div className="flex items-center gap-3 mb-6">
+          <button onClick={onBack} className="text-sm text-gray-500 hover:text-black flex items-center gap-1">
+            ← Back
+          </button>
+          <div>
+            <h1 className="text-xl font-bold text-black">Run — {new Date(detail.run.created_at).toLocaleString()}</h1>
+            <p className="text-sm text-gray-500">{detail.run.company_count} companies · {(detail.run.keywords as string[]).join(", ")}</p>
+          </div>
+        </div>
+
+        {detail.enriched.length > 0 && (
+          <div className="mb-8">
+            <h2 className="text-xs font-semibold uppercase tracking-widest text-gray-400 mb-3">Enriched Companies</h2>
+            <div className="flex flex-col gap-3">
+              {detail.enriched.map((e, i) => (
+                <div key={i} className="bg-white border border-gray-200 px-5 py-4">
+                  <p className="font-semibold text-black mb-2">{e.company}</p>
+                  <div className="grid grid-cols-3 gap-x-6 gap-y-2">
+                    {Object.entries(e.data).filter(([, v]) => v).map(([k, v]) => (
+                      <div key={k}>
+                        <p className="text-[10px] font-semibold uppercase tracking-widest text-gray-400">{k}</p>
+                        <p className="text-sm text-gray-800">{v}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {detail.emails.length > 0 && (
+          <div className="mb-8">
+            <h2 className="text-xs font-semibold uppercase tracking-widest text-gray-400 mb-3">Email Drafts</h2>
+            <div className="flex flex-col gap-3">
+              {detail.emails.map((e, i) => (
+                <div key={i} className="bg-white border border-gray-200 px-5 py-4">
+                  <p className="font-semibold text-black mb-1">{e.company}</p>
+                  <p className="text-sm text-gray-500 mb-2">Subject: {e.subject}</p>
+                  <p className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed">{e.body}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {detail.contacts.length > 0 && (
+          <div>
+            <h2 className="text-xs font-semibold uppercase tracking-widest text-gray-400 mb-3">Contacts</h2>
+            <div className="bg-white border border-gray-200 overflow-x-auto">
+              <table className="w-full text-sm border-collapse">
+                <thead>
+                  <tr className="bg-black text-white">
+                    <th className="px-4 py-3 text-left text-xs font-semibold tracking-wide">Company</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold tracking-wide">Name</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold tracking-wide">Role</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold tracking-wide">LinkedIn</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold tracking-wide">Confidence</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {detail.contacts.map((c, i) => (
+                    <tr key={i} className={`border-t border-gray-100 ${i % 2 === 0 ? "bg-white" : "bg-gray-50/50"}`}>
+                      <td className="px-4 py-3 font-semibold text-black">{c.company}</td>
+                      <td className="px-4 py-3 text-black">{c.name}</td>
+                      <td className="px-4 py-3 text-gray-600">{c.role}</td>
+                      <td className="px-4 py-3">
+                        {c.linkedin ? (
+                          <a href={c.linkedin} target="_blank" rel="noopener noreferrer" className="text-black underline text-xs hover:text-gray-500">View profile ↗</a>
+                        ) : <span className="text-gray-300">—</span>}
+                      </td>
+                      <td className="px-4 py-3"><ConfidenceBadge level={c.confidence as "high" | "medium" | "low"} /></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  return (
+    <div>
+      <PageHeader title="History" subtitle="All past enrichment runs stored in Neon." />
+      {runs.length === 0 ? (
+        <div className="bg-white border border-gray-200 px-6 py-12 text-center text-sm text-gray-400">
+          No runs yet. Complete an enrichment run to see history here.
+        </div>
+      ) : (
+        <div className="flex flex-col gap-2">
+          {runs.map((run) => (
+            <button
+              key={run.id}
+              onClick={() => onSelect(run.id)}
+              className="bg-white border border-gray-200 px-5 py-4 text-left hover:border-black transition-colors group"
+            >
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="font-semibold text-black text-sm">{new Date(run.created_at).toLocaleString()}</p>
+                  <p className="text-xs text-gray-500 mt-0.5">{run.company_count} companies · {(run.keywords as string[]).join(", ")}</p>
+                </div>
+                <span className="text-gray-300 group-hover:text-black text-lg">→</span>
+              </div>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   )
 }
