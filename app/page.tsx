@@ -57,7 +57,7 @@ type HistoryRun = {
 type HistoryDetail = {
   run: HistoryRun
   enriched: Array<{ company: string; data: Record<string, string | null> }>
-  emails: Array<{ company: string; subject: string; body: string }>
+  emails: Array<{ company: string; contact_name: string | null; contact_role: string | null; subject: string; body: string; linkedin_message: string | null }>
   contacts: Array<{ company: string; name: string; role: string; linkedin: string | null; confidence: string }>
 }
 
@@ -81,6 +81,7 @@ export default function Home() {
   const [uploading, setUploading] = useState(false)
   const [historyRuns, setHistoryRuns] = useState<HistoryRun[]>([])
   const [historyDetail, setHistoryDetail] = useState<HistoryDetail | null>(null)
+  const [currentRunId, setCurrentRunId] = useState<string | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
 
   // Load settings from DB on mount
@@ -215,17 +216,18 @@ export default function Home() {
 
     // Save run to DB
     try {
-      await fetch("/api/history", {
+      const res = await fetch("/api/history", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           keywords: runKeywords,
           company_count: companies.length,
           enriched: enriched.filter((e) => e.status === "done"),
-          emails: [],
           contacts: finalContacts,
         }),
       })
+      const data = await res.json()
+      if (data.runId) setCurrentRunId(data.runId)
     } catch {}
 
     // Build outreach contacts list (pre-selected, all valid ones)
@@ -257,6 +259,7 @@ export default function Home() {
       prev.map((c) => selectedIds.includes(c.id) ? { ...c, status: "loading" } : c)
     )
 
+    let finalOutreach = outreach
     for (let bs = 0; bs < toGenerate.length; bs += BATCH_SIZE) {
       await Promise.all(
         toGenerate.slice(bs, bs + BATCH_SIZE).map(async (contact) => {
@@ -274,22 +277,50 @@ export default function Home() {
               }),
             })
             const json = await res.json()
-            setOutreach((prev) =>
-              prev.map((c) =>
+            setOutreach((prev) => {
+              const next = prev.map((c) =>
                 c.id === contact.id
-                  ? { ...c, email: { subject: json.subject, body: json.body }, linkedinMsg: json.linkedinMsg, status: "done" }
+                  ? { ...c, email: { subject: json.subject, body: json.body }, linkedinMsg: json.linkedinMsg, status: "done" as const }
                   : c
               )
-            )
+              finalOutreach = next
+              return next
+            })
           } catch {
-            setOutreach((prev) =>
-              prev.map((c) => (c.id === contact.id ? { ...c, status: "error" } : c))
-            )
+            setOutreach((prev) => {
+              const next = prev.map((c) => (c.id === contact.id ? { ...c, status: "error" as const } : c))
+              finalOutreach = next
+              return next
+            })
           }
         })
       )
     }
+
+    await saveOutreachToHistory(finalOutreach)
   }
+
+  // Save outreach to DB once all done
+  const saveOutreachToHistory = useCallback(async (finalOutreach: OutreachContact[]) => {
+    if (!currentRunId) return
+    const done = finalOutreach.filter((c) => c.status === "done")
+    if (!done.length) return
+    try {
+      await fetch(`/api/history/${currentRunId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          outreach: done.map((c) => ({
+            company: c.company,
+            name: c.name,
+            role: c.role,
+            email: c.email,
+            linkedinMsg: c.linkedinMsg,
+          })),
+        }),
+      })
+    } catch {}
+  }, [currentRunId])
 
   // ─── Export ──────────────────────────────────────────────────────────────
 
@@ -1173,8 +1204,8 @@ function HistoryPage({
         )}
 
         {detail.contacts.length > 0 && (
-          <div>
-            <h2 className="text-xs font-semibold uppercase tracking-widest text-gray-400 mb-3">Contacts</h2>
+          <div className="mb-8">
+            <h2 className="text-xs font-semibold uppercase tracking-widest text-gray-400 mb-3">People ({detail.contacts.length})</h2>
             <div className="bg-white border border-gray-200 overflow-x-auto">
               <table className="w-full text-sm border-collapse">
                 <thead>
@@ -1202,6 +1233,37 @@ function HistoryPage({
                   ))}
                 </tbody>
               </table>
+            </div>
+          </div>
+        )}
+
+        {detail.emails.length > 0 && (
+          <div>
+            <h2 className="text-xs font-semibold uppercase tracking-widest text-gray-400 mb-3">Outreach ({detail.emails.length})</h2>
+            <div className="flex flex-col gap-3">
+              {detail.emails.map((e, i) => (
+                <div key={i} className="bg-white border border-gray-200 px-5 py-4">
+                  <div className="flex items-start justify-between mb-3">
+                    <div>
+                      <p className="font-semibold text-black text-sm">{e.contact_name ?? e.company}</p>
+                      <p className="text-xs text-gray-500">{e.contact_role ? `${e.contact_role} · ` : ""}{e.company}</p>
+                    </div>
+                  </div>
+                  {e.subject && (
+                    <div className="mb-3">
+                      <p className="text-[10px] font-semibold uppercase tracking-widest text-gray-400 mb-1">Email</p>
+                      <p className="text-xs font-medium text-gray-700 mb-1">Subject: {e.subject}</p>
+                      <p className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed">{e.body}</p>
+                    </div>
+                  )}
+                  {e.linkedin_message && (
+                    <div className="pt-3 border-t border-gray-100">
+                      <p className="text-[10px] font-semibold uppercase tracking-widest text-gray-400 mb-1">LinkedIn</p>
+                      <p className="text-sm text-gray-700 leading-relaxed">{e.linkedin_message}</p>
+                    </div>
+                  )}
+                </div>
+              ))}
             </div>
           </div>
         )}

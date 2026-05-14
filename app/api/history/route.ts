@@ -15,7 +15,7 @@ export async function GET() {
 export async function POST(req: NextRequest) {
   try {
     await initDb()
-    const { keywords, company_count, enriched, emails, contacts } = await req.json()
+    const { keywords, company_count, enriched, contacts } = await req.json()
 
     const runRows = await sql`
       INSERT INTO runs (keywords, company_count)
@@ -29,15 +29,6 @@ export async function POST(req: NextRequest) {
         await sql`
           INSERT INTO enriched_companies (run_id, company, data)
           VALUES (${runId}, ${e.company}, ${JSON.stringify(e.data ?? {})})
-        `
-      }
-    }
-
-    if (emails?.length) {
-      for (const e of emails) {
-        await sql`
-          INSERT INTO email_drafts (run_id, company, subject, body)
-          VALUES (${runId}, ${e.company}, ${e.subject ?? ""}, ${e.body ?? ""})
         `
       }
     }

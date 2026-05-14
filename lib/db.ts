@@ -35,11 +35,18 @@ export async function initDb() {
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       run_id UUID NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
       company TEXT NOT NULL,
+      contact_name TEXT,
+      contact_role TEXT,
       subject TEXT,
       body TEXT,
+      linkedin_message TEXT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `
+  // Add columns for existing deployments upgrading from old schema
+  await sql`ALTER TABLE email_drafts ADD COLUMN IF NOT EXISTS contact_name TEXT`
+  await sql`ALTER TABLE email_drafts ADD COLUMN IF NOT EXISTS contact_role TEXT`
+  await sql`ALTER TABLE email_drafts ADD COLUMN IF NOT EXISTS linkedin_message TEXT`
   await sql`
     CREATE TABLE IF NOT EXISTS contacts (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
