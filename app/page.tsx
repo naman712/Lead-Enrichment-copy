@@ -461,15 +461,19 @@ function Sidebar({
   const steps: { id: Tab; label: string; icon: React.ReactNode; hint?: string }[] = [
     { id: "upload", label: "Upload", icon: <IconUpload /> },
     { id: "enrich", label: "Enrich", icon: <IconSearch />, hint: !canAccess("enrich") ? "Upload companies first" : undefined },
-    { id: "contacts", label: "Leads", icon: <IconPerson />, hint: !enrichedDone ? "Run enrichment first" : undefined },
+    { id: "contacts", label: "Leads", icon: <IconPerson />, hint: !enrichedDone ? "Enrich companies first" : undefined },
     { id: "outreach", label: "Outreach", icon: <IconMail />, hint: !contactsDone ? "Find leads first" : undefined },
   ]
 
   return (
     <aside className="w-52 shrink-0 bg-black flex flex-col h-screen">
-      <div className="px-5 pt-6 pb-5 border-b border-white/10">
-        <p className="text-[10px] font-bold tracking-[0.2em] text-white/40 uppercase mb-0.5">Neoflo</p>
-        <p className="text-sm font-semibold text-white leading-tight">Lead Qualification</p>
+      <div className="px-5 pt-6 pb-5 border-b border-white/10 flex items-center gap-3">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src="/neoflo-icon.png" alt="Neoflo" className="w-7 h-7 rounded-md" />
+        <div>
+          <p className="text-[10px] font-bold tracking-[0.2em] text-white/40 uppercase mb-0.5">Neoflo</p>
+          <p className="text-sm font-semibold text-white leading-tight">Lead Generation</p>
+        </div>
       </div>
 
       <nav className="flex-1 px-3 py-4 flex flex-col gap-0.5 overflow-y-auto">
@@ -482,7 +486,7 @@ function Sidebar({
         />
 
         <div className="my-3 border-t border-white/10" />
-        <p className="text-[10px] font-semibold tracking-widest text-white/30 uppercase px-3 mb-1">Run</p>
+        <p className="text-[10px] font-semibold tracking-widest text-white/30 uppercase px-3 mb-1">Session</p>
 
         {steps.map((item, i) => (
           <div key={item.id} className="relative">
@@ -588,7 +592,7 @@ function UploadPage({
 
   return (
     <div>
-      <PageHeader title="New run" subtitle="Upload your company list, set enrichment fields, then start." />
+      <PageHeader title="New session" subtitle="Upload your company list, set enrichment fields, then start." />
 
       <div className="flex flex-col gap-4">
         {/* 1. Drop zone */}
@@ -1193,7 +1197,7 @@ function HistoryPage({
         <div className="flex items-center gap-3 mb-6">
           <button onClick={onBack} className="text-sm text-gray-500 hover:text-black">← Back</button>
           <div>
-            <h1 className="text-xl font-bold text-black">Run — {new Date(detail.run.created_at).toLocaleString()}</h1>
+            <h1 className="text-xl font-bold text-black">Session — {new Date(detail.run.created_at).toLocaleString()}</h1>
             <p className="text-sm text-gray-500">{detail.run.company_count} companies · {(detail.run.keywords as string[]).join(", ")}</p>
           </div>
         </div>
@@ -1289,10 +1293,10 @@ function HistoryPage({
 
   return (
     <div>
-      <PageHeader title="History" subtitle="All past enrichment runs." />
+      <PageHeader title="History" subtitle="All past sessions." />
       {runs.length === 0 ? (
         <div className="bg-white border border-gray-200 px-6 py-12 text-center text-sm text-gray-400">
-          No runs yet. Complete a run to see history here.
+          No sessions yet. Complete a session to see history here.
         </div>
       ) : (
         <div className="flex flex-col gap-2">
