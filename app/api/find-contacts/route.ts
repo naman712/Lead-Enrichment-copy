@@ -24,10 +24,19 @@ async function searchContacts(company: string): Promise<string> {
         }).then((r) => r.json()).catch(() => ({ results: [] }))
       ))
 
-      return results
-        .flatMap((r) => r.results ?? [])
-        .map((r: { title: string; content: string; url: string }) => `${r.title} | ${r.content} | ${r.url}`)
+      const allResults = results.flatMap((r) => r.results ?? []) as { title: string; content: string; url: string }[]
+
+      // Separate LinkedIn profile URLs so they can be matched to names
+      const linkedinProfiles = allResults
+        .filter((r) => r.url.includes("linkedin.com/in/"))
+        .map((r) => `LINKEDIN_PROFILE: ${r.title} | ${r.url}`)
         .join("\n")
+
+      const otherResults = allResults
+        .map((r) => `${r.title} | ${r.content} | ${r.url}`)
+        .join("\n")
+
+      return [linkedinProfiles, otherResults].filter(Boolean).join("\n")
     } catch {
       return ""
     }
@@ -74,7 +83,7 @@ Identify up to 6 contacts relevant for a B2B SaaS finance automation product (CF
 Return a JSON array. Each object must have exactly these keys:
 - "name": full name (string or null if not found in search results)
 - "role": current job title at ${company}
-- "linkedin": LinkedIn profile URL (string or null)
+- "linkedin": LinkedIn profile URL — use the exact URL from any "LINKEDIN_PROFILE:" line that matches this person's name. If no match found, return null. Never fabricate a URL.
 - "confidence": "high" if confirmed in search results, "medium" if partially confirmed, "low" if inferred
 
 Return only the JSON array, no other text.`
