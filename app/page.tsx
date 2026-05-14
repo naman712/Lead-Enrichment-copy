@@ -3,7 +3,6 @@
 import { useState, useCallback, useRef, useEffect } from "react"
 
 const BATCH_SIZE = 3
-const SETTINGS_KEY = "lq_settings_v1"
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -20,13 +19,6 @@ type EnrichedRow = {
   status: "pending" | "loading" | "done" | "error"
 }
 
-type EmailRow = {
-  company: string
-  subject: string
-  body: string
-  status: "pending" | "loading" | "done" | "error"
-}
-
 type Contact = {
   name: string | null
   role: string
@@ -40,7 +32,20 @@ type ContactRow = {
   status: "pending" | "loading" | "done" | "error"
 }
 
-type Tab = "settings" | "upload" | "enrich" | "emails" | "contacts" | "history"
+type OutreachContact = {
+  id: string
+  company: string
+  name: string
+  role: string
+  linkedin: string | null
+  confidence: "high" | "medium" | "low"
+  selected: boolean
+  email?: { subject: string; body: string }
+  linkedinMsg?: string
+  status: "idle" | "loading" | "done" | "error"
+}
+
+type Tab = "upload" | "enrich" | "contacts" | "outreach" | "history"
 
 type HistoryRun = {
   id: string
@@ -66,17 +71,14 @@ const DEFAULT_SETTINGS: Settings = {
 // ─── Main App ─────────────────────────────────────────────────────────────────
 
 export default function Home() {
-  const [tab, setTab] = useState<Tab>("settings")
+  const [tab, setTab] = useState<Tab>("upload")
   const [settings, setSettingsState] = useState<Settings>(DEFAULT_SETTINGS)
-  const [settingsSaved, setSettingsSaved] = useState(false)
   const [companies, setCompanies] = useState<string[]>([])
   const [runKeywords, setRunKeywords] = useState<string[]>(DEFAULT_SETTINGS.keywords)
   const [enriched, setEnriched] = useState<EnrichedRow[]>([])
-  const [emails, setEmails] = useState<EmailRow[]>([])
   const [contacts, setContacts] = useState<ContactRow[]>([])
+  const [outreach, setOutreach] = useState<OutreachContact[]>([])
   const [uploading, setUploading] = useState(false)
-  const [expandedEmail, setExpandedEmail] = useState<string | null>(null)
-  const [newKw, setNewKw] = useState("")
   const [historyRuns, setHistoryRuns] = useState<HistoryRun[]>([])
   const [historyDetail, setHistoryDetail] = useState<HistoryDetail | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
@@ -98,7 +100,7 @@ export default function Home() {
       .catch(() => {})
   }, [])
 
-  const saveSettings = (s: Settings) => {
+  const saveSettings = useCallback((s: Settings) => {
     setSettingsState(s)
     if (enriched.length === 0) setRunKeywords(s.keywords)
     fetch("/api/settings", {
@@ -111,9 +113,7 @@ export default function Home() {
         email_template: s.emailTemplate,
       }),
     }).catch(() => {})
-    setSettingsSaved(true)
-    setTimeout(() => setSettingsSaved(false), 2000)
-  }
+  }, [enriched.length])
 
   // ─── Upload ──────────────────────────────────────────────────────────────
 
@@ -128,8 +128,8 @@ export default function Home() {
       setCompanies(json.companies)
       setRunKeywords(settings.keywords)
       setEnriched([])
-      setEmails([])
       setContacts([])
+      setOutreach([])
     }
   }, [settings.keywords])
 
@@ -147,12 +147,11 @@ export default function Home() {
     setEnriched(rows)
 
     for (let bs = 0; bs < rows.length; bs += BATCH_SIZE) {
-      const batch = rows.slice(bs, bs + BATCH_SIZE)
       setEnriched((prev) =>
         prev.map((r, i) => (i >= bs && i < bs + BATCH_SIZE ? { ...r, status: "loading" } : r))
       )
       await Promise.all(
-        batch.map(async (row, offset) => {
+        rows.slice(bs, bs + BATCH_SIZE).map(async (row, offset) => {
           const idx = bs + offset
           try {
             const res = await fetch("/api/enrich", {
@@ -174,65 +173,20 @@ export default function Home() {
     }
   }
 
-  // ─── Draft Emails ────────────────────────────────────────────────────────
+  // ─── Find People ─────────────────────────────────────────────────────────
 
-  const startDraftEmails = async () => {
-    setTab("emails")
-    const rows: EmailRow[] = companies.map((c) => ({ company: c, subject: "", body: "", status: "pending" }))
-    setEmails(rows)
-
-    for (let bs = 0; bs < rows.length; bs += BATCH_SIZE) {
-      const batch = rows.slice(bs, bs + BATCH_SIZE)
-      setEmails((prev) =>
-        prev.map((r, i) => (i >= bs && i < bs + BATCH_SIZE ? { ...r, status: "loading" } : r))
-      )
-      await Promise.all(
-        batch.map(async (row, offset) => {
-          const idx = bs + offset
-          const enrichedRow = enriched.find((e) => e.company === row.company)
-          try {
-            const res = await fetch("/api/draft-email", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                company: row.company,
-                enrichedData: enrichedRow?.data ?? {},
-                positioning: settings.positioning,
-                icp: settings.icp,
-                emailTemplate: settings.emailTemplate,
-              }),
-            })
-            const json = await res.json()
-            setEmails((prev) =>
-              prev.map((r, i) =>
-                i === idx ? { ...r, subject: json.subject, body: json.body, status: "done" } : r
-              )
-            )
-          } catch {
-            setEmails((prev) =>
-              prev.map((r, i) => (i === idx ? { ...r, status: "error" } : r))
-            )
-          }
-        })
-      )
-    }
-  }
-
-  // ─── Find Contacts ───────────────────────────────────────────────────────
-
-  const startFindContacts = async () => {
+  const startFindPeople = async () => {
     setTab("contacts")
     const rows: ContactRow[] = companies.map((c) => ({ company: c, contacts: [], status: "pending" }))
     setContacts(rows)
     let finalContacts = rows
 
     for (let bs = 0; bs < rows.length; bs += BATCH_SIZE) {
-      const batch = rows.slice(bs, bs + BATCH_SIZE)
       setContacts((prev) =>
         prev.map((r, i) => (i >= bs && i < bs + BATCH_SIZE ? { ...r, status: "loading" } : r))
       )
       await Promise.all(
-        batch.map(async (row, offset) => {
+        rows.slice(bs, bs + BATCH_SIZE).map(async (row, offset) => {
           const idx = bs + offset
           try {
             const res = await fetch("/api/find-contacts", {
@@ -259,17 +213,7 @@ export default function Home() {
       )
     }
 
-    // Save complete run to DB
-    await saveRun(enriched, emails, finalContacts)
-  }
-
-  // ─── Save run to history ─────────────────────────────────────────────────
-
-  const saveRun = useCallback(async (
-    finalEnriched: EnrichedRow[],
-    finalEmails: EmailRow[],
-    finalContacts: ContactRow[],
-  ) => {
+    // Save run to DB
     try {
       await fetch("/api/history", {
         method: "POST",
@@ -277,15 +221,97 @@ export default function Home() {
         body: JSON.stringify({
           keywords: runKeywords,
           company_count: companies.length,
-          enriched: finalEnriched.filter((e) => e.status === "done"),
-          emails: finalEmails.filter((e) => e.status === "done"),
+          enriched: enriched.filter((e) => e.status === "done"),
+          emails: [],
           contacts: finalContacts,
         }),
       })
     } catch {}
-  }, [runKeywords, companies.length])
 
-  // ─── Load history ────────────────────────────────────────────────────────
+    // Build outreach contacts list (pre-selected, all valid ones)
+    const allContacts: OutreachContact[] = finalContacts
+      .flatMap((row) =>
+        (row.contacts ?? [])
+          .filter((c) => c.name && c.name.toLowerCase() !== "unknown")
+          .map((c, i) => ({
+            id: `${row.company}-${i}`,
+            company: row.company,
+            name: c.name!,
+            role: c.role,
+            linkedin: c.linkedin,
+            confidence: c.confidence,
+            selected: true,
+            status: "idle" as const,
+          }))
+      )
+    setOutreach(allContacts)
+  }
+
+  // ─── Generate Outreach ───────────────────────────────────────────────────
+
+  const startGenerateOutreach = async (selectedIds: string[]) => {
+    setTab("outreach")
+    const toGenerate = outreach.filter((c) => selectedIds.includes(c.id))
+
+    setOutreach((prev) =>
+      prev.map((c) => selectedIds.includes(c.id) ? { ...c, status: "loading" } : c)
+    )
+
+    for (let bs = 0; bs < toGenerate.length; bs += BATCH_SIZE) {
+      await Promise.all(
+        toGenerate.slice(bs, bs + BATCH_SIZE).map(async (contact) => {
+          const enrichedRow = enriched.find((e) => e.company === contact.company)
+          try {
+            const res = await fetch("/api/draft-outreach", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                contact: { name: contact.name, role: contact.role },
+                company: contact.company,
+                enrichedData: enrichedRow?.data ?? {},
+                positioning: settings.positioning,
+                icp: settings.icp,
+              }),
+            })
+            const json = await res.json()
+            setOutreach((prev) =>
+              prev.map((c) =>
+                c.id === contact.id
+                  ? { ...c, email: { subject: json.subject, body: json.body }, linkedinMsg: json.linkedinMsg, status: "done" }
+                  : c
+              )
+            )
+          } catch {
+            setOutreach((prev) =>
+              prev.map((c) => (c.id === contact.id ? { ...c, status: "error" } : c))
+            )
+          }
+        })
+      )
+    }
+  }
+
+  // ─── Export ──────────────────────────────────────────────────────────────
+
+  const exportData = async () => {
+    const emailsForExport = outreach
+      .filter((c) => c.status === "done" && c.email)
+      .map((c) => ({ company: c.company, subject: c.email!.subject, body: c.email!.body }))
+    const res = await fetch("/api/export", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enrichedData: enriched, emails: emailsForExport, contacts, keywords: runKeywords }),
+    })
+    const blob = await res.blob()
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement("a")
+    a.href = url
+    a.download = `leads-${Date.now()}.xlsx`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  // ─── History ─────────────────────────────────────────────────────────────
 
   const loadHistory = useCallback(async () => {
     const res = await fetch("/api/history")
@@ -299,32 +325,17 @@ export default function Home() {
     setHistoryDetail(data)
   }, [])
 
-  // ─── Export ──────────────────────────────────────────────────────────────
-
-  const exportData = async () => {
-    const res = await fetch("/api/export", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ enrichedData: enriched, emails, contacts, keywords: runKeywords }),
-    })
-    const blob = await res.blob()
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement("a")
-    a.href = url
-    a.download = `leads-${Date.now()}.xlsx`
-    a.click()
-    URL.revokeObjectURL(url)
-  }
+  // ─── Nav state ───────────────────────────────────────────────────────────
 
   const doneCount = (arr: Array<{ status: string }>) => arr.filter((r) => r.status === "done").length
   const allEnrichedDone = enriched.length > 0 && doneCount(enriched) === enriched.length
+  const allContactsDone = contacts.length > 0 && doneCount(contacts) === contacts.length
 
-  // Nav item accessibility
   const canAccess = (t: Tab) => {
-    if (t === "settings" || t === "upload" || t === "history") return true
+    if (t === "upload" || t === "history") return true
     if (t === "enrich") return enriched.length > 0
-    if (t === "emails") return emails.length > 0
     if (t === "contacts") return contacts.length > 0
+    if (t === "outreach") return outreach.length > 0
     return false
   }
 
@@ -332,31 +343,19 @@ export default function Home() {
 
   return (
     <div className="flex h-screen bg-white overflow-hidden">
-      {/* Sidebar */}
       <Sidebar
         tab={tab}
         setTab={setTab}
         canAccess={canAccess}
-        hasCompanies={companies.length > 0}
         enrichedDone={allEnrichedDone}
-        emailsDone={emails.length > 0 && doneCount(emails) === emails.length}
+        contactsDone={allContactsDone}
+        showExport={enriched.length > 0 || outreach.length > 0 || contacts.length > 0}
         onExport={exportData}
-        showExport={enriched.length > 0 || emails.length > 0 || contacts.length > 0}
         onHistoryClick={loadHistory}
       />
 
-      {/* Main content */}
       <main className="flex-1 overflow-y-auto bg-gray-50">
         <div className="max-w-5xl mx-auto px-8 py-8">
-          {tab === "settings" && (
-            <SettingsPage
-              settings={settings}
-              saved={settingsSaved}
-              newKw={newKw}
-              setNewKw={setNewKw}
-              onSave={saveSettings}
-            />
-          )}
           {tab === "upload" && (
             <UploadPage
               companies={companies}
@@ -368,6 +367,7 @@ export default function Home() {
               onDrop={onDrop}
               onFile={handleFile}
               onStartEnrich={startEnrich}
+              onSaveSettings={saveSettings}
             />
           )}
           {tab === "enrich" && (
@@ -376,25 +376,23 @@ export default function Home() {
               keywords={runKeywords}
               doneCount={doneCount(enriched)}
               total={enriched.length}
-              onDraftEmails={startDraftEmails}
-            />
-          )}
-          {tab === "emails" && (
-            <EmailsPage
-              emails={emails}
-              doneCount={doneCount(emails)}
-              total={emails.length}
-              expandedEmail={expandedEmail}
-              setExpandedEmail={setExpandedEmail}
-              setEmails={setEmails}
-              onFindContacts={startFindContacts}
+              onFindPeople={startFindPeople}
             />
           )}
           {tab === "contacts" && (
             <ContactsPage
               contacts={contacts}
+              outreach={outreach}
               doneCount={doneCount(contacts)}
               total={contacts.length}
+              onGenerateOutreach={startGenerateOutreach}
+              setOutreach={setOutreach}
+            />
+          )}
+          {tab === "outreach" && (
+            <OutreachPage
+              outreach={outreach}
+              setOutreach={setOutreach}
               onExport={exportData}
             />
           )}
@@ -416,41 +414,32 @@ export default function Home() {
 // ─── Sidebar ──────────────────────────────────────────────────────────────────
 
 function Sidebar({
-  tab, setTab, canAccess, hasCompanies, enrichedDone, emailsDone, onExport, showExport, onHistoryClick,
+  tab, setTab, canAccess, enrichedDone, contactsDone, showExport, onExport, onHistoryClick,
 }: {
   tab: Tab
   setTab: (t: Tab) => void
   canAccess: (t: Tab) => boolean
-  hasCompanies: boolean
   enrichedDone: boolean
-  emailsDone: boolean
-  onExport: () => void
+  contactsDone: boolean
   showExport: boolean
+  onExport: () => void
   onHistoryClick: () => void
 }) {
-  const runItems: { id: Tab; label: string; icon: React.ReactNode; hint?: string }[] = [
-    {
-      id: "upload",
-      label: "Upload",
-      icon: <IconUpload />,
-      hint: !hasCompanies ? "Upload a CSV or Excel file" : undefined,
-    },
-    { id: "enrich", label: "Enrich", icon: <IconSearch />, hint: !hasCompanies ? "Upload companies first" : undefined },
-    { id: "emails", label: "Emails", icon: <IconMail />, hint: !enrichedDone ? "Run enrichment first" : undefined },
-    { id: "contacts", label: "Contacts", icon: <IconPerson />, hint: !emailsDone ? "Draft emails first" : undefined },
+  const steps: { id: Tab; label: string; icon: React.ReactNode; hint?: string }[] = [
+    { id: "upload", label: "Upload", icon: <IconUpload /> },
+    { id: "enrich", label: "Enrich", icon: <IconSearch />, hint: !canAccess("enrich") ? "Upload companies first" : undefined },
+    { id: "contacts", label: "People", icon: <IconPerson />, hint: !enrichedDone ? "Run enrichment first" : undefined },
+    { id: "outreach", label: "Outreach", icon: <IconMail />, hint: !contactsDone ? "Find people first" : undefined },
   ]
 
   return (
     <aside className="w-52 shrink-0 bg-black flex flex-col h-screen">
-      {/* Brand */}
       <div className="px-5 pt-6 pb-5 border-b border-white/10">
         <p className="text-[10px] font-bold tracking-[0.2em] text-white/40 uppercase mb-0.5">Neoflo</p>
         <p className="text-sm font-semibold text-white leading-tight">Lead Qualification</p>
       </div>
 
-      {/* Nav */}
       <nav className="flex-1 px-3 py-4 flex flex-col gap-0.5 overflow-y-auto">
-        {/* History */}
         <NavItem
           active={tab === "history"}
           accessible={true}
@@ -460,34 +449,25 @@ function Sidebar({
         />
 
         <div className="my-3 border-t border-white/10" />
-        <p className="text-[10px] font-semibold tracking-widest text-white/30 uppercase px-3 mb-1">Config</p>
-
-        {/* Settings */}
-        <NavItem
-          active={tab === "settings"}
-          accessible={true}
-          icon={<IconSettings />}
-          label="Settings"
-          onClick={() => setTab("settings")}
-        />
-
-        <div className="my-3 border-t border-white/10" />
         <p className="text-[10px] font-semibold tracking-widest text-white/30 uppercase px-3 mb-1">Run</p>
 
-        {runItems.map((item) => (
-          <NavItem
-            key={item.id}
-            active={tab === item.id}
-            accessible={canAccess(item.id)}
-            icon={item.icon}
-            label={item.label}
-            hint={item.hint}
-            onClick={() => canAccess(item.id) && setTab(item.id)}
-          />
+        {steps.map((item, i) => (
+          <div key={item.id} className="relative">
+            {i > 0 && (
+              <div className="absolute left-[22px] -top-1.5 w-px h-1.5 bg-white/10" />
+            )}
+            <NavItem
+              active={tab === item.id}
+              accessible={canAccess(item.id)}
+              icon={item.icon}
+              label={item.label}
+              hint={item.hint}
+              onClick={() => canAccess(item.id) && setTab(item.id)}
+            />
+          </div>
         ))}
       </nav>
 
-      {/* Export */}
       {showExport && (
         <div className="px-3 pb-4 border-t border-white/10 pt-3">
           <button
@@ -534,128 +514,11 @@ function NavItem({
   )
 }
 
-// ─── Settings Page ────────────────────────────────────────────────────────────
-
-function SettingsPage({
-  settings, saved, newKw, setNewKw, onSave,
-}: {
-  settings: Settings
-  saved: boolean
-  newKw: string
-  setNewKw: (v: string) => void
-  onSave: (s: Settings) => void
-}) {
-  const [local, setLocal] = useState(settings)
-
-  // Sync when settings load from localStorage
-  useEffect(() => { setLocal(settings) }, [settings])
-
-  const addKw = (raw = newKw) => {
-    const incoming = raw.split(",").map((k) => k.trim()).filter(Boolean)
-    const unique = incoming.filter((k) => !local.keywords.includes(k))
-    if (unique.length) setLocal((s) => ({ ...s, keywords: [...s.keywords, ...unique] }))
-    setNewKw("")
-  }
-
-  const removeKw = (kw: string) =>
-    setLocal((s) => ({ ...s, keywords: s.keywords.filter((k) => k !== kw) }))
-
-  return (
-    <div>
-      <PageHeader
-        title="Settings"
-        subtitle="Configure defaults used across every run. Change these any time — your next run picks them up automatically."
-      />
-
-      <div className="flex flex-col gap-5">
-        {/* Enrichment fields */}
-        <Card title="Enrichment fields" description="Data points to extract for each company.">
-          <div className="flex flex-wrap gap-1.5 mb-3 min-h-[28px]">
-            {local.keywords.map((kw) => (
-              <span key={kw} className="flex items-center gap-1 bg-black text-white text-xs px-2.5 py-1 font-medium">
-                {kw}
-                <button onClick={() => removeKw(kw)} className="hover:text-white/60 ml-0.5 text-base leading-none">&times;</button>
-              </span>
-            ))}
-          </div>
-          <div className="flex gap-2">
-            <input
-              type="text"
-              value={newKw}
-              onChange={(e) => {
-                const v = e.target.value
-                if (v.endsWith(",")) { addKw(v); return }
-                setNewKw(v)
-              }}
-              onKeyDown={(e) => e.key === "Enter" && addKw()}
-              placeholder="Add fields — comma separated (e.g. Tech Stack, Funding Stage, CEO)"
-              className="flex-1 border border-gray-300 px-3 py-2 text-sm focus:border-black transition-colors bg-white"
-            />
-            <button
-              onClick={() => addKw()}
-              className="border border-black px-4 py-2 text-sm font-medium hover:bg-black hover:text-white transition-colors"
-            >
-              Add
-            </button>
-          </div>
-        </Card>
-
-        {/* Positioning */}
-        <Card title="Your positioning" description="Describes your product and value prop. Used to personalize every outreach email.">
-          <textarea
-            value={local.positioning}
-            onChange={(e) => setLocal((s) => ({ ...s, positioning: e.target.value }))}
-            rows={4}
-            placeholder="e.g. We're Neoflo — AP automation for mid-market companies. We reduce invoice processing time by 80% and cut manual errors to near zero. Used by 40+ finance teams processing 10K+ invoices/month."
-            className="w-full border border-gray-300 px-3 py-2.5 text-sm focus:border-black transition-colors resize-none bg-white leading-relaxed"
-          />
-        </Card>
-
-        {/* ICP */}
-        <Card title="Ideal customer profile (ICP)" description="Who you're selling to. Helps focus contact discovery on the right personas.">
-          <textarea
-            value={local.icp}
-            onChange={(e) => setLocal((s) => ({ ...s, icp: e.target.value }))}
-            rows={3}
-            placeholder="e.g. Mid-market companies (100–2000 employees), US-based, finance teams processing 1000+ invoices/month. Decision makers: CFO, VP Finance, Controller."
-            className="w-full border border-gray-300 px-3 py-2.5 text-sm focus:border-black transition-colors resize-none bg-white leading-relaxed"
-          />
-        </Card>
-
-        {/* Email template */}
-        <Card title="Email template / tone guidance" description="Optional structure or style notes applied to every drafted email.">
-          <textarea
-            value={local.emailTemplate}
-            onChange={(e) => setLocal((s) => ({ ...s, emailTemplate: e.target.value }))}
-            rows={4}
-            placeholder={`e.g.\n- Open with a specific hook about their business\n- Line 2: our value prop in one sentence with a number\n- Line 3: social proof (e.g. "We do this for [similar company]")\n- CTA: ask for a 15-min call this week`}
-            className="w-full border border-gray-300 px-3 py-2.5 text-sm focus:border-black transition-colors resize-none bg-white font-mono leading-relaxed"
-          />
-        </Card>
-
-        <div className="flex items-center gap-3">
-          <button
-            onClick={() => onSave(local)}
-            className="bg-black text-white px-6 py-2.5 text-sm font-medium hover:bg-gray-900 transition-colors"
-          >
-            Save settings
-          </button>
-          {saved && (
-            <span className="text-sm text-gray-500 flex items-center gap-1.5">
-              <span className="text-green-600">✓</span> Saved
-            </span>
-          )}
-        </div>
-      </div>
-    </div>
-  )
-}
-
 // ─── Upload Page ──────────────────────────────────────────────────────────────
 
 function UploadPage({
   companies, settings, runKeywords, setRunKeywords,
-  uploading, fileRef, onDrop, onFile, onStartEnrich,
+  uploading, fileRef, onDrop, onFile, onStartEnrich, onSaveSettings,
 }: {
   companies: string[]
   settings: Settings
@@ -666,28 +529,43 @@ function UploadPage({
   onDrop: (e: React.DragEvent) => void
   onFile: (f: File) => void
   onStartEnrich: () => void
+  onSaveSettings: (s: Settings) => void
 }) {
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [localSettings, setLocalSettings] = useState(settings)
   const [newKw, setNewKw] = useState("")
+  const [savedFlash, setSavedFlash] = useState(false)
+
+  useEffect(() => { setLocalSettings(settings) }, [settings])
 
   const addKw = (raw = newKw) => {
     const incoming = raw.split(",").map((k) => k.trim()).filter(Boolean)
-    const unique = incoming.filter((k) => !runKeywords.includes(k))
-    if (unique.length) setRunKeywords([...runKeywords, ...unique])
+    const unique = incoming.filter((k) => !localSettings.keywords.includes(k))
+    if (unique.length) setLocalSettings((s) => ({ ...s, keywords: [...s.keywords, ...unique] }))
     setNewKw("")
   }
 
-  const removeKw = (kw: string) => setRunKeywords(runKeywords.filter((k) => k !== kw))
+  const handleSaveSettings = () => {
+    onSaveSettings(localSettings)
+    setRunKeywords(localSettings.keywords)
+    setSavedFlash(true)
+    setTimeout(() => setSavedFlash(false), 2000)
+    setSettingsOpen(false)
+  }
 
   return (
     <div>
-      <PageHeader
-        title="New run"
-        subtitle="Upload a list of companies, review the fields, then start enrichment."
-      />
+      <PageHeader title="New run" subtitle="Upload your company list, configure enrichment fields, then start." />
 
-      <div className="flex flex-col gap-5">
+      <div className="flex flex-col gap-4">
         {/* Drop zone */}
-        <Card title="Company list" description="Upload a .xlsx or .csv with a column of company names.">
+        <div className="bg-white border border-gray-200 p-5">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h3 className="text-sm font-semibold text-black">Company list</h3>
+              <p className="text-xs text-gray-500 mt-0.5">Upload a .xlsx or .csv with a column of company names.</p>
+            </div>
+          </div>
           <div
             className={`border-2 border-dashed border-gray-200 p-10 text-center transition-colors ${
               uploading ? "bg-gray-50" : "hover:border-gray-400 cursor-pointer"
@@ -705,7 +583,7 @@ function UploadPage({
               <div className="flex flex-col items-center gap-1">
                 <span className="text-2xl font-bold text-black">{companies.length}</span>
                 <span className="text-sm text-gray-500">companies loaded</span>
-                <span className="text-xs text-gray-400 mt-1">Click to replace file</span>
+                <span className="text-xs text-gray-400 mt-1">Click to replace</span>
               </div>
             ) : (
               <div className="flex flex-col items-center gap-2">
@@ -722,10 +600,8 @@ function UploadPage({
             className="hidden"
             onChange={(e) => { const f = e.target.files?.[0]; if (f) onFile(f) }}
           />
-
-          {/* Company preview */}
           {companies.length > 0 && (
-            <div className="mt-3 border border-gray-100 max-h-40 overflow-y-auto">
+            <div className="mt-3 border border-gray-100 max-h-36 overflow-y-auto">
               {companies.map((c, i) => (
                 <div key={i} className="flex items-center gap-3 px-3 py-1.5 border-b border-gray-50 last:border-0 hover:bg-gray-50">
                   <span className="text-xs text-gray-300 w-5 text-right shrink-0">{i + 1}</span>
@@ -734,64 +610,103 @@ function UploadPage({
               ))}
             </div>
           )}
-        </Card>
+        </div>
 
-        {/* Fields for this run */}
-        <Card
-          title="Fields for this run"
-          description={
-            runKeywords.length > 0 && JSON.stringify(runKeywords) !== JSON.stringify(settings.keywords)
-              ? "Customized for this run — differs from saved settings"
-              : "Loaded from Settings. Edit below to override for this run only."
-          }
-        >
-          <div className="flex flex-wrap gap-1.5 mb-3 min-h-[28px]">
-            {runKeywords.map((kw) => (
-              <span key={kw} className="flex items-center gap-1 bg-black text-white text-xs px-2.5 py-1 font-medium">
-                {kw}
-                <button onClick={() => removeKw(kw)} className="hover:text-white/60 ml-0.5 text-base leading-none">&times;</button>
-              </span>
-            ))}
-          </div>
-          <div className="flex gap-2">
-            <input
-              type="text"
-              value={newKw}
-              onChange={(e) => {
-                const v = e.target.value
-                if (v.endsWith(",")) { addKw(v); return }
-                setNewKw(v)
-              }}
-              onKeyDown={(e) => e.key === "Enter" && addKw()}
-              placeholder="Add more fields (comma separated)"
-              className="flex-1 border border-gray-300 px-3 py-2 text-sm focus:border-black transition-colors bg-white"
-            />
-            <button onClick={() => addKw()} className="border border-black px-4 py-2 text-sm font-medium hover:bg-black hover:text-white transition-colors">
-              Add
-            </button>
-          </div>
-        </Card>
-
-        {/* Settings summary */}
-        {(settings.positioning || settings.icp) && (
-          <Card title="Active settings" description="These will be applied to emails and contact discovery.">
-            <div className="flex flex-col gap-3">
-              {settings.positioning && (
-                <div>
-                  <p className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-1">Positioning</p>
-                  <p className="text-sm text-gray-700 leading-relaxed line-clamp-2">{settings.positioning}</p>
-                </div>
-              )}
-              {settings.icp && (
-                <div>
-                  <p className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-1">ICP</p>
-                  <p className="text-sm text-gray-700 leading-relaxed line-clamp-2">{settings.icp}</p>
-                </div>
-              )}
+        {/* Settings accordion */}
+        <div className="bg-white border border-gray-200 overflow-hidden">
+          <button
+            onClick={() => setSettingsOpen((v) => !v)}
+            className="w-full flex items-center justify-between px-5 py-4 hover:bg-gray-50 transition-colors"
+          >
+            <div className="text-left">
+              <p className="text-sm font-semibold text-black">Configure</p>
+              <p className="text-xs text-gray-500 mt-0.5">
+                {localSettings.keywords.slice(0, 4).join(", ")}{localSettings.keywords.length > 4 ? ` +${localSettings.keywords.length - 4} more` : ""}
+                {localSettings.positioning ? " · Positioning set" : ""}
+              </p>
             </div>
-          </Card>
-        )}
+            <span className="text-gray-400 text-xs ml-4">{settingsOpen ? "▲" : "▼"}</span>
+          </button>
 
+          {settingsOpen && (
+            <div className="border-t border-gray-100 px-5 py-5 flex flex-col gap-5">
+              {/* Enrichment fields */}
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-widest text-gray-500 mb-2">Enrichment fields</p>
+                <div className="flex flex-wrap gap-1.5 mb-2 min-h-[28px]">
+                  {localSettings.keywords.map((kw) => (
+                    <span key={kw} className="flex items-center gap-1 bg-black text-white text-xs px-2.5 py-1 font-medium">
+                      {kw}
+                      <button
+                        onClick={() => setLocalSettings((s) => ({ ...s, keywords: s.keywords.filter((k) => k !== kw) }))}
+                        className="hover:text-white/60 ml-0.5 text-base leading-none"
+                      >&times;</button>
+                    </span>
+                  ))}
+                </div>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={newKw}
+                    onChange={(e) => { const v = e.target.value; if (v.endsWith(",")) { addKw(v); return }; setNewKw(v) }}
+                    onKeyDown={(e) => e.key === "Enter" && addKw()}
+                    placeholder="Add fields — comma separated"
+                    className="flex-1 border border-gray-300 px-3 py-2 text-sm focus:border-black transition-colors bg-white"
+                  />
+                  <button onClick={() => addKw()} className="border border-black px-4 py-2 text-sm font-medium hover:bg-black hover:text-white transition-colors">Add</button>
+                </div>
+              </div>
+
+              {/* Positioning */}
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-widest text-gray-500 mb-2">Your positioning</p>
+                <textarea
+                  value={localSettings.positioning}
+                  onChange={(e) => setLocalSettings((s) => ({ ...s, positioning: e.target.value }))}
+                  rows={3}
+                  placeholder="e.g. We're Neoflo — AP automation for mid-market companies. We reduce invoice processing time by 80%."
+                  className="w-full border border-gray-300 px-3 py-2.5 text-sm focus:border-black transition-colors resize-none bg-white leading-relaxed"
+                />
+              </div>
+
+              {/* ICP */}
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-widest text-gray-500 mb-2">Ideal customer profile (ICP)</p>
+                <textarea
+                  value={localSettings.icp}
+                  onChange={(e) => setLocalSettings((s) => ({ ...s, icp: e.target.value }))}
+                  rows={2}
+                  placeholder="e.g. Mid-market (100–2000 employees), US-based finance teams. CFO, VP Finance, Controller."
+                  className="w-full border border-gray-300 px-3 py-2.5 text-sm focus:border-black transition-colors resize-none bg-white leading-relaxed"
+                />
+              </div>
+
+              {/* Email template */}
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-widest text-gray-500 mb-2">Email template / tone</p>
+                <textarea
+                  value={localSettings.emailTemplate}
+                  onChange={(e) => setLocalSettings((s) => ({ ...s, emailTemplate: e.target.value }))}
+                  rows={3}
+                  placeholder={`e.g.\n- Open with a hook about their business\n- Value prop in one sentence with a number\n- CTA: 15-min call`}
+                  className="w-full border border-gray-300 px-3 py-2.5 text-sm focus:border-black transition-colors resize-none bg-white font-mono leading-relaxed"
+                />
+              </div>
+
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={handleSaveSettings}
+                  className="bg-black text-white px-5 py-2 text-sm font-medium hover:bg-gray-900 transition-colors"
+                >
+                  Save settings
+                </button>
+                {savedFlash && <span className="text-xs text-green-600 font-medium">✓ Saved</span>}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Start button */}
         {companies.length > 0 && (
           <button
             onClick={onStartEnrich}
@@ -809,18 +724,16 @@ function UploadPage({
 // ─── Enrich Page ──────────────────────────────────────────────────────────────
 
 function EnrichPage({
-  enriched, keywords, doneCount, total, onDraftEmails,
+  enriched, keywords, doneCount, total, onFindPeople,
 }: {
   enriched: EnrichedRow[]
   keywords: string[]
   doneCount: number
   total: number
-  onDraftEmails: () => void
+  onFindPeople: () => void
 }) {
   const pct = total ? Math.round((doneCount / total) * 100) : 0
   const allDone = doneCount === total && total > 0
-
-  // Split keywords into short (inline grid) and long (full-width) based on typical value length
   const longFieldHints = ["brief", "description", "summary", "pain", "about", "overview", "notes", "detail"]
   const isLongField = (kw: string) => longFieldHints.some((h) => kw.toLowerCase().includes(h))
 
@@ -837,15 +750,14 @@ function EnrichPage({
         />
         {allDone && (
           <button
-            onClick={onDraftEmails}
+            onClick={onFindPeople}
             className="shrink-0 bg-black text-white px-5 py-2.5 text-sm font-semibold hover:bg-gray-900 transition-colors"
           >
-            Draft emails →
+            Find people →
           </button>
         )}
       </div>
 
-      {/* Progress bar */}
       <div className="mb-6">
         <div className="flex justify-between items-center mb-1.5">
           <span className="text-xs text-gray-400">{pct}% complete</span>
@@ -859,7 +771,6 @@ function EnrichPage({
         </div>
       </div>
 
-      {/* Company cards */}
       <div className="flex flex-col gap-4">
         {enriched.map((row, i) => {
           const isLoading = row.status === "loading"
@@ -869,7 +780,6 @@ function EnrichPage({
 
           return (
             <div key={i} className="bg-white border border-gray-200 overflow-hidden">
-              {/* Card header */}
               <div className="flex items-center justify-between px-5 py-3.5 border-b border-gray-100">
                 <div className="flex items-center gap-3">
                   <div className="w-7 h-7 bg-black text-white text-xs font-bold flex items-center justify-center shrink-0">
@@ -880,17 +790,13 @@ function EnrichPage({
                 <StatusBadge status={row.status} />
               </div>
 
-              {/* Fields grid */}
               {!isPending && (
                 <div className="px-5 py-4">
-                  {/* Short fields — 3-column grid */}
                   {shortFields.length > 0 && (
                     <div className="grid grid-cols-2 gap-x-8 gap-y-3.5 mb-4 sm:grid-cols-3">
                       {shortFields.map((kw) => (
                         <div key={kw}>
-                          <p className="text-[10px] font-semibold uppercase tracking-widest text-gray-400 mb-0.5">
-                            {kw}
-                          </p>
+                          <p className="text-[10px] font-semibold uppercase tracking-widest text-gray-400 mb-0.5">{kw}</p>
                           {isLoading ? (
                             <div className="h-2.5 bg-gray-200 rounded pulse-bar w-3/4 mt-1" />
                           ) : (
@@ -902,20 +808,15 @@ function EnrichPage({
                       ))}
                     </div>
                   )}
-
-                  {/* Long fields — full width, separated by a line if short fields exist */}
                   {longFields.length > 0 && (
                     <div className={`flex flex-col gap-4 ${shortFields.length > 0 ? "pt-4 border-t border-gray-100" : ""}`}>
                       {longFields.map((kw) => (
                         <div key={kw}>
-                          <p className="text-[10px] font-semibold uppercase tracking-widest text-gray-400 mb-1">
-                            {kw}
-                          </p>
+                          <p className="text-[10px] font-semibold uppercase tracking-widest text-gray-400 mb-1">{kw}</p>
                           {isLoading ? (
                             <div className="flex flex-col gap-1.5">
                               <div className="h-2.5 bg-gray-200 rounded pulse-bar w-full" />
                               <div className="h-2.5 bg-gray-100 rounded pulse-bar w-4/5" />
-                              <div className="h-2.5 bg-gray-100 rounded pulse-bar w-2/3" />
                             </div>
                           ) : (
                             <p className="text-sm text-gray-700 leading-relaxed">
@@ -928,8 +829,6 @@ function EnrichPage({
                   )}
                 </div>
               )}
-
-              {/* Pending state */}
               {isPending && (
                 <div className="px-5 py-4">
                   <p className="text-sm text-gray-300">Waiting...</p>
@@ -943,142 +842,46 @@ function EnrichPage({
   )
 }
 
-// ─── Emails Page ──────────────────────────────────────────────────────────────
-
-function EmailsPage({
-  emails, doneCount, total, expandedEmail, setExpandedEmail, setEmails, onFindContacts,
-}: {
-  emails: EmailRow[]
-  doneCount: number
-  total: number
-  expandedEmail: string | null
-  setExpandedEmail: (v: string | null) => void
-  setEmails: React.Dispatch<React.SetStateAction<EmailRow[]>>
-  onFindContacts: () => void
-}) {
-  const pct = total ? Math.round((doneCount / total) * 100) : 0
-  const allDone = doneCount === total && total > 0
-
-  return (
-    <div>
-      <div className="flex items-start justify-between mb-6">
-        <PageHeader
-          title="Email drafts"
-          subtitle={allDone ? `${total} emails drafted. Click any row to edit and copy.` : `${doneCount} of ${total} drafted.`}
-        />
-        {allDone && (
-          <button onClick={onFindContacts} className="shrink-0 bg-black text-white px-5 py-2.5 text-sm font-semibold hover:bg-gray-900 transition-colors">
-            Find contacts →
-          </button>
-        )}
-      </div>
-
-      <div className="mb-5">
-        <div className="flex justify-between items-center mb-1.5">
-          <span className="text-xs text-gray-400">{pct}% complete</span>
-          <span className="text-xs text-gray-400">{doneCount}/{total}</span>
-        </div>
-        <div className="w-full bg-gray-200 h-1 rounded-full overflow-hidden">
-          <div
-            className={`h-full bg-black rounded-full transition-all duration-500 ${!allDone && total > 0 ? "pulse-bar" : ""}`}
-            style={{ width: `${pct}%` }}
-          />
-        </div>
-      </div>
-
-      <div className="flex flex-col gap-2">
-        {emails.map((email, i) => {
-          const isOpen = expandedEmail === email.company
-          return (
-            <div key={i} className="bg-white border border-gray-200 overflow-hidden">
-              {/* Row header */}
-              <button
-                className="w-full flex items-center gap-4 px-5 py-3.5 hover:bg-gray-50 transition-colors text-left"
-                onClick={() => setExpandedEmail(isOpen ? null : email.company)}
-              >
-                <span className="font-semibold text-sm text-black min-w-[140px] shrink-0">{email.company}</span>
-                <span className="flex-1 text-xs text-gray-500 truncate">
-                  {email.status === "done" && email.subject ? email.subject : ""}
-                </span>
-                <div className="flex items-center gap-3 shrink-0">
-                  <StatusBadge status={email.status} />
-                  {email.status === "done" && (
-                    <span className="text-gray-400 text-xs">{isOpen ? "▲" : "▼"}</span>
-                  )}
-                </div>
-              </button>
-
-              {/* Expanded editor */}
-              {isOpen && email.status === "done" && (
-                <div className="border-t border-gray-100 bg-gray-50/60">
-                  <div className="px-5 py-4 flex flex-col gap-3">
-                    <div>
-                      <label className="block text-[11px] font-semibold uppercase tracking-widest text-gray-400 mb-1.5">Subject line</label>
-                      <input
-                        type="text"
-                        value={email.subject}
-                        onChange={(e) =>
-                          setEmails((prev) => prev.map((r, idx) => idx === i ? { ...r, subject: e.target.value } : r))
-                        }
-                        className="w-full border border-gray-200 bg-white px-3 py-2 text-sm focus:border-black transition-colors font-medium"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-[11px] font-semibold uppercase tracking-widest text-gray-400 mb-1.5">Email body</label>
-                      <textarea
-                        value={email.body}
-                        rows={9}
-                        onChange={(e) =>
-                          setEmails((prev) => prev.map((r, idx) => idx === i ? { ...r, body: e.target.value } : r))
-                        }
-                        className="w-full border border-gray-200 bg-white px-3 py-2 text-sm focus:border-black transition-colors resize-none font-mono leading-relaxed"
-                      />
-                    </div>
-                    <button
-                      onClick={() => navigator.clipboard.writeText(`Subject: ${email.subject}\n\n${email.body}`)}
-                      className="self-start text-xs font-semibold border border-gray-300 px-4 py-1.5 hover:border-black hover:bg-black hover:text-white transition-colors"
-                    >
-                      Copy email
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
-          )
-        })}
-      </div>
-    </div>
-  )
-}
-
 // ─── Contacts Page ────────────────────────────────────────────────────────────
 
 function ContactsPage({
-  contacts, doneCount, total, onExport,
+  contacts, outreach, doneCount, total, onGenerateOutreach, setOutreach,
 }: {
   contacts: ContactRow[]
+  outreach: OutreachContact[]
   doneCount: number
   total: number
-  onExport: () => void
+  onGenerateOutreach: (ids: string[]) => void
+  setOutreach: React.Dispatch<React.SetStateAction<OutreachContact[]>>
 }) {
   const pct = total ? Math.round((doneCount / total) * 100) : 0
   const allDone = doneCount === total && total > 0
-  const allContacts = contacts.flatMap((row) => (row.contacts ?? []).map((c) => ({ ...c, company: row.company }))).filter((c) => c.name && c.name.toLowerCase() !== "unknown")
+  const selected = outreach.filter((c) => c.selected)
+  const allSelected = outreach.length > 0 && selected.length === outreach.length
+
+  const toggleAll = () =>
+    setOutreach((prev) => prev.map((c) => ({ ...c, selected: !allSelected })))
+
+  const toggleOne = (id: string) =>
+    setOutreach((prev) => prev.map((c) => (c.id === id ? { ...c, selected: !c.selected } : c)))
 
   return (
     <div>
       <div className="flex items-start justify-between mb-6">
         <PageHeader
-          title="Contacts"
+          title="People"
           subtitle={
             allDone
-              ? `${allContacts.length} contacts found across ${total} companies.`
+              ? `${outreach.length} contacts found. Select who to reach out to.`
               : `${doneCount} of ${total} companies searched.`
           }
         />
-        {allDone && (
-          <button onClick={onExport} className="shrink-0 bg-black text-white px-5 py-2.5 text-sm font-semibold hover:bg-gray-900 transition-colors">
-            Export all →
+        {allDone && selected.length > 0 && (
+          <button
+            onClick={() => onGenerateOutreach(selected.map((c) => c.id))}
+            className="shrink-0 bg-black text-white px-5 py-2.5 text-sm font-semibold hover:bg-gray-900 transition-colors"
+          >
+            Generate outreach for {selected.length} →
           </button>
         )}
       </div>
@@ -1096,7 +899,6 @@ function ContactsPage({
         </div>
       </div>
 
-      {/* Loading list */}
       {!allDone && (
         <div className="bg-white border border-gray-200 mb-5 overflow-hidden">
           {contacts.map((row, i) => (
@@ -1108,11 +910,25 @@ function ContactsPage({
         </div>
       )}
 
-      {allContacts.length > 0 && (
-        <div className="bg-white border border-gray-200 overflow-x-auto">
+      {allDone && outreach.length > 0 && (
+        <div className="bg-white border border-gray-200 overflow-hidden">
+          {/* Select all header */}
+          <div className="flex items-center gap-3 px-4 py-3 border-b border-gray-100 bg-gray-50">
+            <input
+              type="checkbox"
+              checked={allSelected}
+              onChange={toggleAll}
+              className="w-4 h-4 accent-black cursor-pointer"
+            />
+            <span className="text-xs font-semibold uppercase tracking-widest text-gray-500">
+              {allSelected ? "Deselect all" : "Select all"} ({outreach.length})
+            </span>
+          </div>
+
           <table className="w-full border-collapse text-sm">
             <thead>
               <tr className="bg-black text-white">
+                <th className="px-4 py-3 w-10" />
                 <th className="px-4 py-3 text-left text-xs font-semibold tracking-wide whitespace-nowrap">Company</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold tracking-wide whitespace-nowrap">Name</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold tracking-wide whitespace-nowrap">Role</th>
@@ -1121,26 +937,34 @@ function ContactsPage({
               </tr>
             </thead>
             <tbody>
-              {allContacts.map((c, i) => (
-                <tr key={i} className={`border-t border-gray-100 align-top ${i % 2 === 0 ? "bg-white" : "bg-gray-50/50"} hover:bg-blue-50/20 transition-colors`}>
-                  <td className="px-4 py-3 font-semibold text-black whitespace-nowrap">{c.company}</td>
-                  <td className="px-4 py-3 whitespace-nowrap">
-                    {c.name ? (
-                      <span className="font-medium text-black">{c.name}</span>
-                    ) : (
-                      <span className="text-gray-300">Unknown</span>
-                    )}
+              {outreach.map((c, i) => (
+                <tr
+                  key={c.id}
+                  onClick={() => toggleOne(c.id)}
+                  className={`border-t border-gray-100 cursor-pointer transition-colors ${
+                    c.selected ? "bg-gray-50" : "bg-white"
+                  } hover:bg-gray-50/80`}
+                >
+                  <td className="px-4 py-3 text-center">
+                    <input
+                      type="checkbox"
+                      checked={c.selected}
+                      onChange={() => toggleOne(c.id)}
+                      onClick={(e) => e.stopPropagation()}
+                      className="w-4 h-4 accent-black cursor-pointer"
+                    />
                   </td>
+                  <td className="px-4 py-3 font-semibold text-black whitespace-nowrap">{c.company}</td>
+                  <td className="px-4 py-3 font-medium text-black whitespace-nowrap">{c.name}</td>
                   <td className="px-4 py-3 text-gray-600 whitespace-nowrap">{c.role}</td>
                   <td className="px-4 py-3">
                     {c.linkedin ? (
                       <a href={c.linkedin} target="_blank" rel="noopener noreferrer"
+                        onClick={(e) => e.stopPropagation()}
                         className="text-black underline text-xs hover:text-gray-500 whitespace-nowrap">
                         View profile ↗
                       </a>
-                    ) : (
-                      <span className="text-gray-300">—</span>
-                    )}
+                    ) : <span className="text-gray-300">—</span>}
                   </td>
                   <td className="px-4 py-3">
                     <ConfidenceBadge level={c.confidence} />
@@ -1149,6 +973,266 @@ function ContactsPage({
               ))}
             </tbody>
           </table>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── Outreach Page ────────────────────────────────────────────────────────────
+
+function OutreachPage({
+  outreach, setOutreach, onExport,
+}: {
+  outreach: OutreachContact[]
+  setOutreach: React.Dispatch<React.SetStateAction<OutreachContact[]>>
+  onExport: () => void
+}) {
+  const [activeTab, setActiveTab] = useState<Record<string, "email" | "linkedin">>({})
+  const generated = outreach.filter((c) => c.status === "done" || c.status === "loading")
+  const doneCount = outreach.filter((c) => c.status === "done").length
+
+  const getTab = (id: string) => activeTab[id] ?? "email"
+  const switchTab = (id: string, t: "email" | "linkedin") =>
+    setActiveTab((prev) => ({ ...prev, [id]: t }))
+
+  const updateEmail = (id: string, field: "subject" | "body", val: string) =>
+    setOutreach((prev) =>
+      prev.map((c) => c.id === id ? { ...c, email: { ...c.email!, [field]: val } } : c)
+    )
+  const updateLinkedin = (id: string, val: string) =>
+    setOutreach((prev) => prev.map((c) => c.id === id ? { ...c, linkedinMsg: val } : c))
+
+  return (
+    <div>
+      <div className="flex items-start justify-between mb-6">
+        <PageHeader
+          title="Outreach"
+          subtitle={`${doneCount} of ${generated.length} generated. Email + LinkedIn message per contact.`}
+        />
+        {doneCount > 0 && (
+          <button onClick={onExport} className="shrink-0 bg-black text-white px-5 py-2.5 text-sm font-semibold hover:bg-gray-900 transition-colors">
+            Export all →
+          </button>
+        )}
+      </div>
+
+      <div className="flex flex-col gap-4">
+        {generated.map((contact) => {
+          const tab = getTab(contact.id)
+          const isLoading = contact.status === "loading"
+          return (
+            <div key={contact.id} className="bg-white border border-gray-200 overflow-hidden">
+              {/* Header */}
+              <div className="flex items-center justify-between px-5 py-3.5 border-b border-gray-100">
+                <div>
+                  <p className="font-semibold text-black text-sm">{contact.name}</p>
+                  <p className="text-xs text-gray-500">{contact.role} · {contact.company}</p>
+                </div>
+                <div className="flex items-center gap-3">
+                  {contact.linkedin && (
+                    <a href={contact.linkedin} target="_blank" rel="noopener noreferrer"
+                      className="text-xs text-gray-500 underline hover:text-black">LI ↗</a>
+                  )}
+                  <StatusBadge status={contact.status} />
+                </div>
+              </div>
+
+              {/* Tab switcher */}
+              {!isLoading && contact.status === "done" && (
+                <>
+                  <div className="flex border-b border-gray-100">
+                    {(["email", "linkedin"] as const).map((t) => (
+                      <button
+                        key={t}
+                        onClick={() => switchTab(contact.id, t)}
+                        className={`px-5 py-2.5 text-xs font-semibold uppercase tracking-wider transition-colors ${
+                          tab === t
+                            ? "border-b-2 border-black text-black"
+                            : "text-gray-400 hover:text-gray-600"
+                        }`}
+                      >
+                        {t === "email" ? "Email" : "LinkedIn"}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="px-5 py-4">
+                    {tab === "email" && contact.email && (
+                      <div className="flex flex-col gap-3">
+                        <div>
+                          <label className="block text-[11px] font-semibold uppercase tracking-widest text-gray-400 mb-1.5">Subject</label>
+                          <input
+                            type="text"
+                            value={contact.email.subject}
+                            onChange={(e) => updateEmail(contact.id, "subject", e.target.value)}
+                            className="w-full border border-gray-200 bg-white px-3 py-2 text-sm focus:border-black transition-colors font-medium"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[11px] font-semibold uppercase tracking-widest text-gray-400 mb-1.5">Body</label>
+                          <textarea
+                            value={contact.email.body}
+                            rows={8}
+                            onChange={(e) => updateEmail(contact.id, "body", e.target.value)}
+                            className="w-full border border-gray-200 bg-white px-3 py-2 text-sm focus:border-black transition-colors resize-none font-mono leading-relaxed"
+                          />
+                        </div>
+                        <button
+                          onClick={() => navigator.clipboard.writeText(`Subject: ${contact.email!.subject}\n\n${contact.email!.body}`)}
+                          className="self-start text-xs font-semibold border border-gray-300 px-4 py-1.5 hover:border-black hover:bg-black hover:text-white transition-colors"
+                        >
+                          Copy email
+                        </button>
+                      </div>
+                    )}
+                    {tab === "linkedin" && (
+                      <div className="flex flex-col gap-3">
+                        <div>
+                          <label className="block text-[11px] font-semibold uppercase tracking-widest text-gray-400 mb-1.5">
+                            LinkedIn message <span className="text-gray-300 normal-case font-normal tracking-normal">({(contact.linkedinMsg ?? "").length}/280)</span>
+                          </label>
+                          <textarea
+                            value={contact.linkedinMsg ?? ""}
+                            rows={4}
+                            maxLength={300}
+                            onChange={(e) => updateLinkedin(contact.id, e.target.value)}
+                            className="w-full border border-gray-200 bg-white px-3 py-2 text-sm focus:border-black transition-colors resize-none leading-relaxed"
+                          />
+                        </div>
+                        <button
+                          onClick={() => navigator.clipboard.writeText(contact.linkedinMsg ?? "")}
+                          className="self-start text-xs font-semibold border border-gray-300 px-4 py-1.5 hover:border-black hover:bg-black hover:text-white transition-colors"
+                        >
+                          Copy message
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
+
+              {isLoading && (
+                <div className="px-5 py-4 flex flex-col gap-2">
+                  <div className="h-2.5 bg-gray-200 rounded pulse-bar w-1/2" />
+                  <div className="h-2.5 bg-gray-100 rounded pulse-bar w-full" />
+                  <div className="h-2.5 bg-gray-100 rounded pulse-bar w-4/5" />
+                </div>
+              )}
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+// ─── History Page ─────────────────────────────────────────────────────────────
+
+function HistoryPage({
+  runs, detail, onLoad, onSelect, onBack,
+}: {
+  runs: HistoryRun[]
+  detail: HistoryDetail | null
+  onLoad: () => void
+  onSelect: (id: string) => void
+  onBack: () => void
+}) {
+  useEffect(() => { onLoad() }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (detail) {
+    return (
+      <div>
+        <div className="flex items-center gap-3 mb-6">
+          <button onClick={onBack} className="text-sm text-gray-500 hover:text-black">← Back</button>
+          <div>
+            <h1 className="text-xl font-bold text-black">Run — {new Date(detail.run.created_at).toLocaleString()}</h1>
+            <p className="text-sm text-gray-500">{detail.run.company_count} companies · {(detail.run.keywords as string[]).join(", ")}</p>
+          </div>
+        </div>
+
+        {detail.enriched.length > 0 && (
+          <div className="mb-8">
+            <h2 className="text-xs font-semibold uppercase tracking-widest text-gray-400 mb-3">Enriched Companies</h2>
+            <div className="flex flex-col gap-3">
+              {detail.enriched.map((e, i) => (
+                <div key={i} className="bg-white border border-gray-200 px-5 py-4">
+                  <p className="font-semibold text-black mb-2">{e.company}</p>
+                  <div className="grid grid-cols-3 gap-x-6 gap-y-2">
+                    {Object.entries(e.data).filter(([, v]) => v).map(([k, v]) => (
+                      <div key={k}>
+                        <p className="text-[10px] font-semibold uppercase tracking-widest text-gray-400">{k}</p>
+                        <p className="text-sm text-gray-800">{v}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {detail.contacts.length > 0 && (
+          <div>
+            <h2 className="text-xs font-semibold uppercase tracking-widest text-gray-400 mb-3">Contacts</h2>
+            <div className="bg-white border border-gray-200 overflow-x-auto">
+              <table className="w-full text-sm border-collapse">
+                <thead>
+                  <tr className="bg-black text-white">
+                    <th className="px-4 py-3 text-left text-xs font-semibold tracking-wide">Company</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold tracking-wide">Name</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold tracking-wide">Role</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold tracking-wide">LinkedIn</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold tracking-wide">Confidence</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {detail.contacts.map((c, i) => (
+                    <tr key={i} className={`border-t border-gray-100 ${i % 2 === 0 ? "bg-white" : "bg-gray-50/50"}`}>
+                      <td className="px-4 py-3 font-semibold text-black">{c.company}</td>
+                      <td className="px-4 py-3 text-black">{c.name}</td>
+                      <td className="px-4 py-3 text-gray-600">{c.role}</td>
+                      <td className="px-4 py-3">
+                        {c.linkedin
+                          ? <a href={c.linkedin} target="_blank" rel="noopener noreferrer" className="text-black underline text-xs hover:text-gray-500">View ↗</a>
+                          : <span className="text-gray-300">—</span>}
+                      </td>
+                      <td className="px-4 py-3"><ConfidenceBadge level={c.confidence as "high" | "medium" | "low"} /></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  return (
+    <div>
+      <PageHeader title="History" subtitle="All past enrichment runs." />
+      {runs.length === 0 ? (
+        <div className="bg-white border border-gray-200 px-6 py-12 text-center text-sm text-gray-400">
+          No runs yet. Complete a run to see history here.
+        </div>
+      ) : (
+        <div className="flex flex-col gap-2">
+          {runs.map((run) => (
+            <button
+              key={run.id}
+              onClick={() => onSelect(run.id)}
+              className="bg-white border border-gray-200 px-5 py-4 text-left hover:border-black transition-colors group"
+            >
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="font-semibold text-black text-sm">{new Date(run.created_at).toLocaleString()}</p>
+                  <p className="text-xs text-gray-500 mt-0.5">{run.company_count} companies · {(run.keywords as string[]).join(", ")}</p>
+                </div>
+                <span className="text-gray-300 group-hover:text-black text-lg">→</span>
+              </div>
+            </button>
+          ))}
         </div>
       )}
     </div>
@@ -1166,44 +1250,6 @@ function PageHeader({ title, subtitle }: { title: string; subtitle?: string }) {
   )
 }
 
-function Card({ title, description, children }: { title: string; description?: string; children: React.ReactNode }) {
-  return (
-    <div className="bg-white border border-gray-200 p-5">
-      <div className="mb-4">
-        <h3 className="text-sm font-semibold text-black">{title}</h3>
-        {description && <p className="text-xs text-gray-500 mt-0.5">{description}</p>}
-      </div>
-      {children}
-    </div>
-  )
-}
-
-function CellValue({ value }: { value: string }) {
-  const isLong = value.length > 55
-  if (!isLong) {
-    return <span className="text-sm text-gray-700 leading-snug">{value}</span>
-  }
-  return (
-    <div className="group relative">
-      <span
-        className="text-sm text-gray-700"
-        style={{
-          display: "-webkit-box",
-          WebkitLineClamp: 2,
-          WebkitBoxOrient: "vertical",
-          overflow: "hidden",
-          lineHeight: "1.45",
-        }}
-      >
-        {value}
-      </span>
-      <div className="hidden group-hover:block absolute z-30 left-0 top-full mt-1 w-72 bg-black text-white text-xs p-3 leading-relaxed shadow-xl pointer-events-none">
-        {value}
-      </div>
-    </div>
-  )
-}
-
 function StatusBadge({ status }: { status: string }) {
   if (status === "loading")
     return (
@@ -1213,11 +1259,7 @@ function StatusBadge({ status }: { status: string }) {
       </span>
     )
   if (status === "done")
-    return (
-      <span className="flex items-center gap-1 text-xs font-semibold text-green-700">
-        <span className="text-green-500">✓</span> Done
-      </span>
-    )
+    return <span className="flex items-center gap-1 text-xs font-semibold text-green-700"><span className="text-green-500">✓</span> Done</span>
   if (status === "error")
     return <span className="text-xs font-semibold text-red-500">Error</span>
   return <span className="text-xs text-gray-300">Pending</span>
@@ -1236,15 +1278,6 @@ function ConfidenceBadge({ level }: { level: string }) {
 }
 
 // ─── Icons ────────────────────────────────────────────────────────────────────
-
-function IconSettings() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
-      <circle cx="8" cy="8" r="2.5" />
-      <path d="M8 1v1.5M8 13.5V15M1 8h1.5M13.5 8H15M3.05 3.05l1.06 1.06M11.89 11.89l1.06 1.06M3.05 12.95l1.06-1.06M11.89 4.11l1.06-1.06" />
-    </svg>
-  )
-}
 
 function IconUpload() {
   return (
@@ -1289,14 +1322,6 @@ function IconExport() {
   )
 }
 
-function IconUploadLg() {
-  return (
-    <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.2" className="text-gray-300">
-      <path strokeLinecap="round" strokeLinejoin="round" d="M9 13h6m-3-3v6m5 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-    </svg>
-  )
-}
-
 function IconHistory() {
   return (
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -1305,131 +1330,10 @@ function IconHistory() {
   )
 }
 
-// ─── History Page ─────────────────────────────────────────────────────────────
-
-function HistoryPage({
-  runs, detail, onLoad, onSelect, onBack,
-}: {
-  runs: HistoryRun[]
-  detail: HistoryDetail | null
-  onLoad: () => void
-  onSelect: (id: string) => void
-  onBack: () => void
-}) {
-  useEffect(() => { onLoad() }, []) // eslint-disable-line react-hooks/exhaustive-deps
-
-  if (detail) {
-    return (
-      <div>
-        <div className="flex items-center gap-3 mb-6">
-          <button onClick={onBack} className="text-sm text-gray-500 hover:text-black flex items-center gap-1">
-            ← Back
-          </button>
-          <div>
-            <h1 className="text-xl font-bold text-black">Run — {new Date(detail.run.created_at).toLocaleString()}</h1>
-            <p className="text-sm text-gray-500">{detail.run.company_count} companies · {(detail.run.keywords as string[]).join(", ")}</p>
-          </div>
-        </div>
-
-        {detail.enriched.length > 0 && (
-          <div className="mb-8">
-            <h2 className="text-xs font-semibold uppercase tracking-widest text-gray-400 mb-3">Enriched Companies</h2>
-            <div className="flex flex-col gap-3">
-              {detail.enriched.map((e, i) => (
-                <div key={i} className="bg-white border border-gray-200 px-5 py-4">
-                  <p className="font-semibold text-black mb-2">{e.company}</p>
-                  <div className="grid grid-cols-3 gap-x-6 gap-y-2">
-                    {Object.entries(e.data).filter(([, v]) => v).map(([k, v]) => (
-                      <div key={k}>
-                        <p className="text-[10px] font-semibold uppercase tracking-widest text-gray-400">{k}</p>
-                        <p className="text-sm text-gray-800">{v}</p>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {detail.emails.length > 0 && (
-          <div className="mb-8">
-            <h2 className="text-xs font-semibold uppercase tracking-widest text-gray-400 mb-3">Email Drafts</h2>
-            <div className="flex flex-col gap-3">
-              {detail.emails.map((e, i) => (
-                <div key={i} className="bg-white border border-gray-200 px-5 py-4">
-                  <p className="font-semibold text-black mb-1">{e.company}</p>
-                  <p className="text-sm text-gray-500 mb-2">Subject: {e.subject}</p>
-                  <p className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed">{e.body}</p>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {detail.contacts.length > 0 && (
-          <div>
-            <h2 className="text-xs font-semibold uppercase tracking-widest text-gray-400 mb-3">Contacts</h2>
-            <div className="bg-white border border-gray-200 overflow-x-auto">
-              <table className="w-full text-sm border-collapse">
-                <thead>
-                  <tr className="bg-black text-white">
-                    <th className="px-4 py-3 text-left text-xs font-semibold tracking-wide">Company</th>
-                    <th className="px-4 py-3 text-left text-xs font-semibold tracking-wide">Name</th>
-                    <th className="px-4 py-3 text-left text-xs font-semibold tracking-wide">Role</th>
-                    <th className="px-4 py-3 text-left text-xs font-semibold tracking-wide">LinkedIn</th>
-                    <th className="px-4 py-3 text-left text-xs font-semibold tracking-wide">Confidence</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {detail.contacts.map((c, i) => (
-                    <tr key={i} className={`border-t border-gray-100 ${i % 2 === 0 ? "bg-white" : "bg-gray-50/50"}`}>
-                      <td className="px-4 py-3 font-semibold text-black">{c.company}</td>
-                      <td className="px-4 py-3 text-black">{c.name}</td>
-                      <td className="px-4 py-3 text-gray-600">{c.role}</td>
-                      <td className="px-4 py-3">
-                        {c.linkedin ? (
-                          <a href={c.linkedin} target="_blank" rel="noopener noreferrer" className="text-black underline text-xs hover:text-gray-500">View profile ↗</a>
-                        ) : <span className="text-gray-300">—</span>}
-                      </td>
-                      <td className="px-4 py-3"><ConfidenceBadge level={c.confidence as "high" | "medium" | "low"} /></td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        )}
-      </div>
-    )
-  }
-
+function IconUploadLg() {
   return (
-    <div>
-      <PageHeader title="History" subtitle="All past enrichment runs stored in Neon." />
-      {runs.length === 0 ? (
-        <div className="bg-white border border-gray-200 px-6 py-12 text-center text-sm text-gray-400">
-          No runs yet. Complete an enrichment run to see history here.
-        </div>
-      ) : (
-        <div className="flex flex-col gap-2">
-          {runs.map((run) => (
-            <button
-              key={run.id}
-              onClick={() => onSelect(run.id)}
-              className="bg-white border border-gray-200 px-5 py-4 text-left hover:border-black transition-colors group"
-            >
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="font-semibold text-black text-sm">{new Date(run.created_at).toLocaleString()}</p>
-                  <p className="text-xs text-gray-500 mt-0.5">{run.company_count} companies · {(run.keywords as string[]).join(", ")}</p>
-                </div>
-                <span className="text-gray-300 group-hover:text-black text-lg">→</span>
-              </div>
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
+    <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.2" className="text-gray-300">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M9 13h6m-3-3v6m5 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+    </svg>
   )
 }

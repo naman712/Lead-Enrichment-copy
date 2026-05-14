@@ -175,7 +175,7 @@ export async function POST(req: NextRequest) {
 PRIORITY ORDER:
 1. Use the crawled/extracted content below as the primary source
 2. If a field is missing from the content, use your training knowledge — do NOT leave fields null
-3. Mark values from training knowledge with a "*" suffix (e.g. "~$1.2B*")
+3. Use "~" prefix only for genuinely uncertain estimates (e.g. "~$1.2B")
 
 ${fullContext}
 
