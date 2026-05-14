@@ -577,8 +577,8 @@ function UploadPage({
 
   const addKw = (raw = newKw) => {
     const incoming = raw.split(",").map((k) => k.trim()).filter(Boolean)
-    const unique = incoming.filter((k) => !localSettings.keywords.includes(k))
-    if (unique.length) setLocalSettings((s) => ({ ...s, keywords: [...s.keywords, ...unique] }))
+    const unique = incoming.filter((k) => !runKeywords.includes(k))
+    if (unique.length) setRunKeywords([...runKeywords, ...unique])
     setNewKw("")
   }
 
